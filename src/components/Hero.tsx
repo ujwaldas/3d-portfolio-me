@@ -33,9 +33,9 @@ export default function Hero() {
   const mode = useLayoutMode();
   const reduced = usePrefersReducedMotion();
   const coarse = useCoarsePointer();
-  const isMobile = mode === "mobile";
   const [active, setActive] = useState(true);
   const [ready, setReady] = useState(false);
+  const [portraitLive, setPortraitLive] = useState(false);
   const hasRenderedFrame = useRef(false);
 
   const { scrollYProgress } = useScroll({ target: trackRef, offset: ["start start", "end end"] });
@@ -47,18 +47,21 @@ export default function Hero() {
   const textY = useTransform(scrollYProgress, [0, 0.58], [0, -56]);
   const hintOpacity = useTransform(scrollYProgress, [0, 0.08], [1, 0]);
 
-  /* Observe the sticky STAGE (not the 300vh track) — iOS often mis-reports the tall track */
+  /* Observe the sticky STAGE (not the 300vh track). active starts true so the first frame
+     always runs; IO may only pause after the canvas has rendered at least once. */
   useEffect(() => {
-    if (isMobile) return;
     const el = stageRef.current;
     if (!el) return;
     const io = new IntersectionObserver(([e]) => {
-      if (!hasRenderedFrame.current) return;
+      if (!hasRenderedFrame.current) {
+        if (e.isIntersecting) setActive(true);
+        return;
+      }
       setActive(e.isIntersecting);
-    }, { rootMargin: "120px 0px" });
+    }, { rootMargin: "120px 0px", threshold: 0 });
     io.observe(el);
     return () => io.disconnect();
-  }, [isMobile]);
+  }, []);
 
   useEffect(() => {
     const onResize = () => window.dispatchEvent(new Event("resize"));
@@ -81,19 +84,24 @@ export default function Hero() {
         {/* atmosphere */}
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_70%_35%,rgba(56,120,220,0.16),transparent_55%),radial-gradient(ellipse_at_20%_80%,rgba(30,64,175,0.12),transparent_55%)]" />
 
+        {!portraitLive && <HeroPortraitFallback />}
+
         <ParticlePortrait
           src={profile.heroImage}
           progressRef={progressRef}
           mode={mode}
           reducedMotion={reduced}
           mouseEnabled={!coarse && !reduced}
-          active={isMobile ? true : active}
+          active={active}
           quality={mode === "mobile" ? "low" : "auto"}
-          onReady={() => setReady(true)}
+          onReady={() => {
+            setPortraitLive(true);
+            setReady(true);
+          }}
           onFirstFrame={() => {
             hasRenderedFrame.current = true;
           }}
-          className="webgl-layer absolute inset-0 z-0"
+          className="hero-canvas-host z-0"
           fallback={<HeroPortraitFallback />}
         />
 
@@ -102,7 +110,7 @@ export default function Hero() {
           style={staticText ? undefined : { opacity: textOpacity, y: textY }}
           className="pointer-events-none relative z-10 h-full"
         >
-          <div className="mx-auto flex h-full max-w-7xl flex-col justify-end px-6 pb-24 pt-[40svh] md:justify-center md:pb-0 md:pt-0">
+          <div className="hero-copy-pad mx-auto flex h-full max-w-7xl flex-col justify-end px-6 pb-24 md:justify-center md:pb-0 md:pt-0">
             <motion.div
               initial={{ opacity: 0, y: 30 }}
               animate={{ opacity: ready || reduced ? 1 : 0, y: ready || reduced ? 0 : 30 }}

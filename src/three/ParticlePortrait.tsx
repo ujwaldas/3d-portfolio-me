@@ -415,6 +415,54 @@ function analysisMaxSize(mode: LayoutMode, faceCount: number): number {
   return 560;
 }
 
+function safeDeviceDpr(mode: LayoutMode): number | [number, number] {
+  if (typeof window === "undefined") return mode === "mobile" ? 1 : [1, 1.75];
+  const raw = window.devicePixelRatio;
+  const dpr = Number.isFinite(raw) && raw > 0 ? raw : 1;
+  if (mode === "mobile") return Math.min(Math.max(dpr, 1), 2);
+  return [1, 1.75];
+}
+
+/** Sync renderer size from the actual host container (not window.innerWidth). */
+function HostSizeSync({ hostRef }: { hostRef: RefObject<HTMLDivElement | null> }) {
+  const gl = useThree((s) => s.gl);
+  const camera = useThree((s) => s.camera);
+  const invalidate = useThree((s) => s.invalidate);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+
+    const sync = () => {
+      const rect = host.getBoundingClientRect();
+      const w = Math.round(rect.width);
+      const h = Math.round(rect.height);
+      if (w < 2 || h < 2) return;
+      gl.setSize(w, h, false);
+      const cam = camera as THREE.PerspectiveCamera;
+      if (cam.isPerspectiveCamera) {
+        cam.aspect = w / h;
+        cam.updateProjectionMatrix();
+      }
+      invalidate();
+    };
+
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(host);
+    const vv = window.visualViewport;
+    vv?.addEventListener("resize", sync);
+    window.addEventListener("orientationchange", sync);
+    return () => {
+      ro.disconnect();
+      vv?.removeEventListener("resize", sync);
+      window.removeEventListener("orientationchange", sync);
+    };
+  }, [hostRef, gl, camera, invalidate]);
+
+  return null;
+}
+
 /* ----------------------------- scene ------------------------------------- */
 interface SceneProps {
   src: string;
@@ -447,7 +495,10 @@ function Scene({
   const rawDpr = useThree((s) => s.viewport.dpr);
   const gl = useThree((s) => s.gl);
   const camera = useThree((s) => s.camera);
-  const dpr = Number.isFinite(rawDpr) ? rawDpr : gl.getPixelRatio() || 1;
+  const dpr = Math.min(
+    Math.max(Number.isFinite(rawDpr) && rawDpr > 0 ? rawDpr : gl.getPixelRatio() || 1, 1),
+    mode === "mobile" ? 2 : 1.75,
+  );
   const maxPointSize = useMemo(() => readMaxPointSize(gl), [gl]);
   const firstFrameDone = useRef(false);
   const introDone = useRef(false);
@@ -929,7 +980,7 @@ export default function ParticlePortrait({
     if (dbg) setDebugInfo((d) => ({ ...d, error: String(err) }));
   };
 
-  const shouldAnimate = isMobile || active || !portraitReady || !introComplete;
+  const shouldAnimate = active || !portraitReady || !introComplete;
   const showFallback = failed;
 
   return (
@@ -942,7 +993,7 @@ export default function ParticlePortrait({
             key={glRetry}
             frameloop={shouldAnimate ? "always" : "never"}
             resize={{ scroll: true, debounce: { scroll: 80, resize: 0 } }}
-            dpr={mode === "mobile" ? [1, 1.25] : [1, 1.75]}
+            dpr={safeDeviceDpr(mode)}
             camera={{ position: [0, 0, BASE_Z], fov: FOV, near: 0.1, far: 100 }}
             gl={{
               antialias: false,
@@ -955,12 +1006,14 @@ export default function ParticlePortrait({
             onCreated={({ gl, invalidate, size: canvasSize }) => {
               invalidateRef.current = invalidate;
               const canvas = gl.domElement;
-              if (canvasSize.width < 2 || canvasSize.height < 2) {
-                const w = Math.max(window.innerWidth, 2);
-                const h = Math.max(window.innerHeight, 2);
-                gl.setSize(w, h, false);
+              const host = wrapperRef.current;
+              const rect = host?.getBoundingClientRect();
+              const hostW = Math.round(rect?.width ?? canvasSize.width);
+              const hostH = Math.round(rect?.height ?? canvasSize.height);
+              if (hostW >= 2 && hostH >= 2 && (canvasSize.width < 2 || canvasSize.height < 2)) {
+                gl.setSize(hostW, hostH, false);
                 dbgOnce("zeroCanvas", () =>
-                  console.warn("[ParticlePortrait:debug] canvas was 0×0, forced", w, h),
+                  console.warn("[ParticlePortrait:debug] canvas was 0×0, synced to host", hostW, hostH),
                 );
               }
               dbgOnce("webgl", () => {
@@ -984,6 +1037,7 @@ export default function ParticlePortrait({
               canvas.addEventListener("webglcontextrestored", onRestored);
             }}
           >
+            <HostSizeSync hostRef={wrapperRef} />
             <Scene
               src={src}
               progressRef={progressRef}

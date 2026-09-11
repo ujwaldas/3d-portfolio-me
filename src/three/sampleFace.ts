@@ -762,6 +762,12 @@ export function sampleFromPixels(data: Pixels, w: number, h: number, opts: Sampl
     anchorNormals[k * 2 + 1] = oy;
   });
 
+  for (const arr of [positions, colors, sizes, alphas, scatter, bright]) {
+    for (let i = 0; i < arr.length; i++) {
+      if (!Number.isFinite(arr[i])) arr[i] = 0;
+    }
+  }
+
   return {
     count, positions, colors, sizes, alphas, seeds, scatter, bright,
     anchors, anchorNormals, anchorCount: anchorIdx.length,

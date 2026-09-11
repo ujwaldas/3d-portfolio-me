@@ -29,40 +29,57 @@ body {
   font-family: var(--font-mono);
 }
 
-/* vh → dvh → svh fallbacks — unsupported svh collapses sticky WebGL stage to 0×0 */
+/* Hero track & stage — vh baseline, svh when supported (avoids 0×0 WebGL on old webviews) */
+.hero-track {
+  height: 300vh;
+}
+
 .hero-stage {
   height: 100vh;
   min-height: 560px;
 }
-@supports (height: 100dvh) {
-  .hero-stage {
-    height: 100dvh;
+
+@supports (height: 1svh) {
+  .hero-track {
+    height: 300svh;
   }
-}
-@supports (height: 100svh) {
+
   .hero-stage {
     height: 100svh;
   }
 }
-.hero-track {
-  height: 300vh;
+
+/* Mobile copy offset — vh fallback for svh padding */
+.hero-copy-pad {
+  padding-top: 40vh;
 }
-@supports (height: 300dvh) {
-  .hero-track {
-    height: 300dvh;
-  }
-}
-@supports (height: 100svh) {
-  .hero-track {
-    height: 300svh;
+
+@supports (padding-top: 1svh) {
+  .hero-copy-pad {
+    padding-top: 40svh;
   }
 }
 
-/* iOS WebGL compositing inside sticky + overflow:hidden */
-.webgl-layer {
+@media (min-width: 768px) {
+  .hero-copy-pad {
+    padding-top: 0;
+  }
+}
+
+/* Canvas host fills the sticky stage; translateZ(0) fixes iOS sticky+overflow compositing */
+.hero-canvas-host {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   transform: translateZ(0);
   -webkit-transform: translateZ(0);
-  will-change: transform;
+}
+
+.hero-canvas-host canvas {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
 }
 
 /* animated dash on highlighted constellation edges */

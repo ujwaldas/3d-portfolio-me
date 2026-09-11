@@ -157,8 +157,8 @@ const pointVert = /* glsl */ `
     float blur = clamp(abs(dist - uFocus) * uDof, 0.0, 1.0);
     vBlur = blur;
     vAlpha = alpha * (1.0 - 0.5 * blur);
-    gl_PointSize = aSize * uSize * uPixelRatio * (1.0 + uSizeGrow * blur) / max(0.1, dist);
-    gl_PointSize = min(max(gl_PointSize, uPixelRatio * 1.1), uMaxPointSize);
+    float computedSize = aSize * uSize * uPixelRatio * (1.0 + uSizeGrow * blur) / max(0.1, dist);
+    gl_PointSize = clamp(computedSize, 1.75, min(uMaxPointSize, 64.0));
     gl_Position = projectionMatrix * mv;
   }
 `;
@@ -359,17 +359,20 @@ const smoothstep = (a: number, b: number, x: number) => {
 
 /** Portrait placement in world units, derived from the camera frustum at BASE_Z (aspect-safe). */
 function computeLayout(width: number, height: number, aspect: number, mode: LayoutMode) {
+  const w = Math.max(width, 2);
+  const h = Math.max(height, 2);
+  const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : 0.75;
   const vh = 2 * BASE_Z * Math.tan((FOV * Math.PI) / 360);
-  const vw = vh * (width / height);
+  const vw = vh * (w / h);
   if (mode === "desktop") {
-    const s = Math.min(0.8 * vh, (0.44 * vw) / aspect);
+    const s = Math.min(0.8 * vh, (0.44 * vw) / safeAspect);
     return { scale: s, x: 0.24 * vw, y: -0.04 * vh, vh, vw };
   }
   if (mode === "tablet") {
-    const s = Math.min(0.64 * vh, (0.5 * vw) / aspect);
+    const s = Math.min(0.64 * vh, (0.5 * vw) / safeAspect);
     return { scale: s, x: 0.24 * vw, y: 0, vh, vw };
   }
-  const s = Math.max(0.34 * vh, Math.min(0.46 * vh, (0.88 * vw) / aspect));
+  const s = Math.max(0.34 * vh, Math.min(0.46 * vh, (0.88 * vw) / safeAspect));
   const halfH = s * 0.5;
   const margin = 0.02 * vh;
   let y = 0.19 * vh;
@@ -389,7 +392,27 @@ function readMaxPointSize(gl: THREE.WebGLRenderer): number {
   const ctx = gl.getContext() as WebGLRenderingContext;
   const range = ctx.getParameter(ctx.ALIASED_POINT_SIZE_RANGE) as number[] | Float32Array;
   const max = Array.isArray(range) || range instanceof Float32Array ? range[1] : 64;
-  return Number.isFinite(max) ? max : 64;
+  return Number.isFinite(max) ? Math.min(max, 64) : 64;
+}
+
+function sampleFaceWithRetry(img: HTMLImageElement, opts: { count: number; maxSize: number; anchorCount: number }) {
+  try {
+    return sampleFace(img, opts);
+  } catch (first) {
+    console.warn("[ParticlePortrait] sampleFace retry at 40% / 320px", first);
+    return sampleFace(img, {
+      count: Math.max(2000, Math.floor(opts.count * 0.4)),
+      maxSize: 320,
+      anchorCount: Math.max(30, Math.floor(opts.anchorCount * 0.5)),
+    });
+  }
+}
+
+function analysisMaxSize(mode: LayoutMode, faceCount: number): number {
+  if (mode === "mobile") return 420;
+  if (faceCount >= 40000) return 720;
+  if (faceCount >= 20000) return 640;
+  return 560;
 }
 
 /* ----------------------------- scene ------------------------------------- */
@@ -430,13 +453,19 @@ function Scene({
   const introDone = useRef(false);
 
   const [sample, setSample] = useState<FaceSample | null>(null);
-  const st = useRef({ rotY: 0, rotX: 0, mx: 0, my: 0, intro: 0 });
+  const st = useRef({ rotY: 0, rotX: 0, mx: 0, my: 0, intro: reducedMotion ? 1 : 0 });
+
+  useEffect(() => {
+    if (reducedMotion) st.current.intro = 1;
+  }, [reducedMotion, sample]);
 
   /* image → point cloud (re-runs whenever `src` or the particle budget changes) */
   useEffect(() => {
     let cancelled = false;
     setSample(null);
-    st.current.intro = 0;
+    st.current.intro = reducedMotion ? 1 : 0;
+    const anchorCount = mode === "mobile" ? 60 : 110;
+    const maxSize = analysisMaxSize(mode, counts.face);
     loadImage(src)
       .then((img) => {
         if (cancelled) return;
@@ -445,10 +474,10 @@ function Scene({
           onDebugUpdate?.({ image: `${img.naturalWidth}x${img.naturalHeight} @ ${src}` });
         });
         try {
-          const s = sampleFace(img, {
+          const s = sampleFaceWithRetry(img, {
             count: counts.face,
-            maxSize: counts.face >= 40000 ? 720 : counts.face >= 20000 ? 640 : 560,
-            anchorCount: mode === "mobile" ? 60 : 110,
+            maxSize,
+            anchorCount,
           });
           console.info(
             `[ParticlePortrait] ${src.split("/").pop()} → points=${s.count} bg=${s.bgMode} mask=${s.debug.maskPixels}px analysis=${s.debug.analysisSize.join("x")} aspect=${s.aspect.toFixed(3)} bottomCut=${s.debug.bottomCut} z=[${s.debug.zRange.map((v) => v.toFixed(3)).join(", ")}]`,
@@ -552,7 +581,8 @@ function Scene({
     });
     const facePxH = (layout.scale / layout.vh) * size.height; // portrait height in CSS px
     const spacing = facePxH * Math.sqrt((sample?.coverage ?? 0.6) / counts.face); // mean star spacing (CSS px)
-    const quad = Math.max(3, 1.8 * spacing); // sprite quad incl. halo
+    const quadMin = mode === "mobile" ? 3.6 : 3;
+    const quad = Math.max(quadMin, 1.8 * spacing); // sprite quad incl. halo
     const coreR = Math.max(0.12, 1.2 / (quad * dpr)); // core never thinner than ~1.2 device px
     const safeDpr = Number.isFinite(dpr) && dpr > 0 ? dpr : gl.getPixelRatio() || 1;
     for (const m of Object.values(mats)) {
@@ -595,7 +625,7 @@ function Scene({
     mats.face.uniforms.uBreath.value = reducedMotion ? 0 : 0.006;
     mats.star.uniforms.uParallax.value = 0.06; // only the world-space starfield shears with depth
     for (const m of Object.values(mats)) if (m.uniforms.uPixelRatio) m.uniforms.uPixelRatio.value = safeDpr;
-  }, [layout, size.width, size.height, sample?.coverage, counts.face, counts.nebula, dpr, mats, reducedMotion, gl, maxPointSize, onDebugUpdate]);
+  }, [layout, size.width, size.height, sample?.coverage, counts.face, counts.nebula, dpr, mats, reducedMotion, gl, maxPointSize, onDebugUpdate, mode]);
 
   /* mouse ------------------------------------------------------------------- */
   const mouse = useRef({ x: 0, y: 0 });
@@ -825,8 +855,12 @@ export default function ParticlePortrait({
 }: ParticlePortraitProps) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const invalidateRef = useRef<() => void>(() => {});
-  const tier = useMemo(() => (quality === "auto" ? detectTier() : quality), [quality]);
+  const tier = useMemo(
+    () => (mode === "mobile" ? "low" : quality === "auto" ? detectTier() : quality),
+    [mode, quality],
+  );
   const counts = COUNTS[mode][tier];
+  const isMobile = mode === "mobile";
   const [portraitReady, setPortraitReady] = useState(false);
   const [introComplete, setIntroComplete] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -895,7 +929,7 @@ export default function ParticlePortrait({
     if (dbg) setDebugInfo((d) => ({ ...d, error: String(err) }));
   };
 
-  const shouldAnimate = active || !portraitReady || !introComplete;
+  const shouldAnimate = isMobile || active || !portraitReady || !introComplete;
   const showFallback = failed;
 
   return (
@@ -913,14 +947,22 @@ export default function ParticlePortrait({
             gl={{
               antialias: false,
               alpha: true,
-              powerPreference: "high-performance",
+              powerPreference: isMobile ? "default" : "high-performance",
               stencil: false,
               failIfMajorPerformanceCaveat: false,
             }}
             style={{ position: "absolute", inset: 0, width: "100%", height: "100%", display: "block" }}
-            onCreated={({ gl, invalidate }) => {
+            onCreated={({ gl, invalidate, size: canvasSize }) => {
               invalidateRef.current = invalidate;
               const canvas = gl.domElement;
+              if (canvasSize.width < 2 || canvasSize.height < 2) {
+                const w = Math.max(window.innerWidth, 2);
+                const h = Math.max(window.innerHeight, 2);
+                gl.setSize(w, h, false);
+                dbgOnce("zeroCanvas", () =>
+                  console.warn("[ParticlePortrait:debug] canvas was 0×0, forced", w, h),
+                );
+              }
               dbgOnce("webgl", () => {
                 const range = readMaxPointSize(gl);
                 console.info("[ParticlePortrait:debug] WebGL ok, pointSize max", range);

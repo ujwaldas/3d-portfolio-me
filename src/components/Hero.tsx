@@ -7,7 +7,7 @@ import ParticlePortrait from "../three/ParticlePortrait";
 
 function HeroPortraitFallback() {
   return (
-    <div className="pointer-events-none absolute inset-x-0 top-[6%] mx-auto flex h-[46%] w-full max-w-[92%] items-center justify-center md:top-[4%] md:h-[78%] md:max-w-[48%] md:justify-end md:pr-[4%]">
+    <div className="pointer-events-none absolute inset-x-0 top-[6%] z-0 mx-auto flex h-[46%] w-full max-w-[92%] items-center justify-center md:top-[4%] md:h-[78%] md:max-w-[48%] md:justify-end md:pr-[4%]">
       <div className="relative h-full w-full max-w-[340px] overflow-hidden rounded-[2rem] border border-white/[0.08] bg-[#0a1220]/40 shadow-[0_0_80px_rgba(56,120,220,0.12)]">
         <img
           src={profile.heroImage}
@@ -28,10 +28,12 @@ function HeroPortraitFallback() {
  */
 export default function Hero() {
   const trackRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const progressRef = useRef(0);
   const mode = useLayoutMode();
   const reduced = usePrefersReducedMotion();
   const coarse = useCoarsePointer();
+  const isMobile = mode === "mobile";
   const [active, setActive] = useState(true);
   const [ready, setReady] = useState(false);
   const hasRenderedFrame = useRef(false);
@@ -45,8 +47,10 @@ export default function Hero() {
   const textY = useTransform(scrollYProgress, [0, 0.58], [0, -56]);
   const hintOpacity = useTransform(scrollYProgress, [0, 0.08], [1, 0]);
 
+  /* Observe the sticky STAGE (not the 300vh track) — iOS often mis-reports the tall track */
   useEffect(() => {
-    const el = trackRef.current;
+    if (isMobile) return;
+    const el = stageRef.current;
     if (!el) return;
     const io = new IntersectionObserver(([e]) => {
       if (!hasRenderedFrame.current) return;
@@ -54,24 +58,26 @@ export default function Hero() {
     }, { rootMargin: "120px 0px" });
     io.observe(el);
     return () => io.disconnect();
-  }, []);
+  }, [isMobile]);
 
   useEffect(() => {
     const onResize = () => window.dispatchEvent(new Event("resize"));
     const vv = window.visualViewport;
     vv?.addEventListener("resize", onResize);
     window.addEventListener("resize", onResize);
+    window.addEventListener("orientationchange", onResize);
     return () => {
       vv?.removeEventListener("resize", onResize);
       window.removeEventListener("resize", onResize);
+      window.removeEventListener("orientationchange", onResize);
     };
   }, []);
 
   const staticText = reduced;
 
   return (
-    <div id="top" ref={trackRef} className={reduced ? "relative hero-stage min-h-[560px]" : "relative hero-track"}>
-      <div className="sticky top-0 hero-stage min-h-[520px] overflow-hidden">
+    <div id="top" ref={trackRef} className={reduced ? "relative hero-stage" : "relative hero-track"}>
+      <div ref={stageRef} className="sticky top-0 hero-stage overflow-hidden">
         {/* atmosphere */}
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_70%_35%,rgba(56,120,220,0.16),transparent_55%),radial-gradient(ellipse_at_20%_80%,rgba(30,64,175,0.12),transparent_55%)]" />
 
@@ -81,22 +87,22 @@ export default function Hero() {
           mode={mode}
           reducedMotion={reduced}
           mouseEnabled={!coarse && !reduced}
-          active={active}
+          active={isMobile ? true : active}
           quality={mode === "mobile" ? "low" : "auto"}
           onReady={() => setReady(true)}
           onFirstFrame={() => {
             hasRenderedFrame.current = true;
           }}
-          className="absolute inset-0"
+          className="webgl-layer absolute inset-0 z-0"
           fallback={<HeroPortraitFallback />}
         />
 
-        {/* copy */}
+        {/* copy — top padding on mobile so H1 does not cover the portrait */}
         <motion.div
           style={staticText ? undefined : { opacity: textOpacity, y: textY }}
           className="pointer-events-none relative z-10 h-full"
         >
-          <div className="mx-auto flex h-full max-w-7xl flex-col justify-end px-6 pb-24 md:justify-center md:pb-0">
+          <div className="mx-auto flex h-full max-w-7xl flex-col justify-end px-6 pb-24 pt-[40svh] md:justify-center md:pb-0 md:pt-0">
             <motion.div
               initial={{ opacity: 0, y: 30 }}
               animate={{ opacity: ready || reduced ? 1 : 0, y: ready || reduced ? 0 : 30 }}

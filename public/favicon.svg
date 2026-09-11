@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <rect width="32" height="32" rx="8" fill="#05070d"/>
+  <rect x="1" y="1" width="30" height="30" rx="7" stroke="#17314d" stroke-width="0.75"/>
+  <!-- U + D ligature: right leg of U and left stem of D share x=14.5 -->
+  <path
+    fill="url(#ud-grad)"
+    d="M 8 8
+       V 17
+       C 8 21.5 10.2 23.5 13 23.5
+       H 14.5
+       C 20.5 23.5 25.5 21 25.5 15.5
+       C 25.5 10 20.5 8 14.5 8
+       H 10.5
+       C 9 8 8 8 8 8
+       Z"
+  />
+  <defs>
+    <linearGradient id="ud-grad" x1="8" y1="8" x2="25" y2="23" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7dd3fc"/>
+      <stop offset="0.5" stop-color="#e2e8f0"/>
+      <stop offset="1" stop-color="#94a3b8"/>
+    </linearGradient>
+  </defs>
+</svg>

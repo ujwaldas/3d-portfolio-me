@@ -29,9 +29,15 @@ body {
   font-family: var(--font-mono);
 }
 
-/* svh fallback — unsupported in older mobile WebViews collapses h-svh to 0 */
+/* vh → dvh → svh fallbacks — unsupported svh collapses sticky WebGL stage to 0×0 */
 .hero-stage {
   height: 100vh;
+  min-height: 560px;
+}
+@supports (height: 100dvh) {
+  .hero-stage {
+    height: 100dvh;
+  }
 }
 @supports (height: 100svh) {
   .hero-stage {
@@ -41,10 +47,22 @@ body {
 .hero-track {
   height: 300vh;
 }
+@supports (height: 300dvh) {
+  .hero-track {
+    height: 300dvh;
+  }
+}
 @supports (height: 100svh) {
   .hero-track {
     height: 300svh;
   }
+}
+
+/* iOS WebGL compositing inside sticky + overflow:hidden */
+.webgl-layer {
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+  will-change: transform;
 }
 
 /* animated dash on highlighted constellation edges */

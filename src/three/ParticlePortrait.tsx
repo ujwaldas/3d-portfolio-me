@@ -408,26 +408,37 @@ function sampleFaceWithRetry(img: HTMLImageElement, opts: { count: number; maxSi
   }
 }
 
-function analysisMaxSize(mode: LayoutMode, faceCount: number): number {
-  if (mode === "mobile") return 420;
+function analysisMaxSize(mode: LayoutMode, faceCount: number, touchLayout: boolean): number {
+  if (touchLayout || mode === "mobile") return 320;
   if (faceCount >= 40000) return 720;
   if (faceCount >= 20000) return 640;
   return 560;
 }
 
-function safeDeviceDpr(mode: LayoutMode): number | [number, number] {
-  if (typeof window === "undefined") return mode === "mobile" ? 1 : [1, 1.75];
-  const raw = window.devicePixelRatio;
-  const dpr = Number.isFinite(raw) && raw > 0 ? raw : 1;
-  if (mode === "mobile") return Math.min(Math.max(dpr, 1), 2);
+function readViewportSize() {
+  const vv = window.visualViewport;
+  return {
+    w: Math.max(vv?.width ?? window.innerWidth, 2),
+    h: Math.max(vv?.height ?? window.innerHeight, 2),
+  };
+}
+
+function safeDeviceDpr(touchLayout: boolean, mode: LayoutMode): number | [number, number] {
+  if (touchLayout || mode === "mobile") return 1;
+  if (typeof window === "undefined") return [1, 1.75];
   return [1, 1.75];
 }
 
-/** Sync renderer size from the actual host container (not window.innerWidth). */
-function HostSizeSync({ hostRef }: { hostRef: RefObject<HTMLDivElement | null> }) {
-  const gl = useThree((s) => s.gl);
-  const camera = useThree((s) => s.camera);
+/** Nudge R3F to re-measure when the host resizes — do NOT call gl.setSize (breaks R3F size state). */
+function HostInvalidateSync({
+  hostRef,
+  touchLayout,
+}: {
+  hostRef: RefObject<HTMLDivElement | null>;
+  touchLayout: boolean;
+}) {
   const invalidate = useThree((s) => s.invalidate);
+  const advance = useThree((s) => s.advance);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -435,16 +446,14 @@ function HostSizeSync({ hostRef }: { hostRef: RefObject<HTMLDivElement | null> }
 
     const sync = () => {
       const rect = host.getBoundingClientRect();
-      const w = Math.round(rect.width);
-      const h = Math.round(rect.height);
-      if (w < 2 || h < 2) return;
-      gl.setSize(w, h, false);
-      const cam = camera as THREE.PerspectiveCamera;
-      if (cam.isPerspectiveCamera) {
-        cam.aspect = w / h;
-        cam.updateProjectionMatrix();
+      const vp = touchLayout ? readViewportSize() : null;
+      const w = rect.width >= 2 ? rect.width : vp?.w ?? 0;
+      const h = rect.height >= 2 ? rect.height : vp?.h ?? 0;
+      if (w >= 2 && h >= 2) {
+        invalidate();
+        // iOS Safari can leave a blank frame after address-bar resize unless we force one
+        if (touchLayout) advance(0);
       }
-      invalidate();
     };
 
     sync();
@@ -458,7 +467,7 @@ function HostSizeSync({ hostRef }: { hostRef: RefObject<HTMLDivElement | null> }
       vv?.removeEventListener("resize", sync);
       window.removeEventListener("orientationchange", sync);
     };
-  }, [hostRef, gl, camera, invalidate]);
+  }, [hostRef, invalidate, advance, touchLayout]);
 
   return null;
 }
@@ -468,6 +477,7 @@ interface SceneProps {
   src: string;
   progressRef?: RefObject<number>;
   mode: LayoutMode;
+  touchLayout: boolean;
   reducedMotion: boolean;
   mouseEnabled: boolean;
   counts: Counts;
@@ -482,6 +492,7 @@ function Scene({
   src,
   progressRef,
   mode,
+  touchLayout,
   reducedMotion,
   mouseEnabled,
   counts,
@@ -495,28 +506,51 @@ function Scene({
   const rawDpr = useThree((s) => s.viewport.dpr);
   const gl = useThree((s) => s.gl);
   const camera = useThree((s) => s.camera);
+  const [vpSize, setVpSize] = useState(() => (touchLayout ? readViewportSize() : { w: 0, h: 0 }));
+
+  useEffect(() => {
+    if (!touchLayout) return;
+    const sync = () => setVpSize(readViewportSize());
+    sync();
+    window.visualViewport?.addEventListener("resize", sync);
+    window.addEventListener("orientationchange", sync);
+    return () => {
+      window.visualViewport?.removeEventListener("resize", sync);
+      window.removeEventListener("orientationchange", sync);
+    };
+  }, [touchLayout]);
+
+  const canvasW =
+    size.width >= 2
+      ? size.width
+      : Math.max(gl.domElement.clientWidth, gl.domElement.getBoundingClientRect().width, vpSize.w, 2);
+  const canvasH =
+    size.height >= 2
+      ? size.height
+      : Math.max(gl.domElement.clientHeight, gl.domElement.getBoundingClientRect().height, vpSize.h, 2);
   const dpr = Math.min(
     Math.max(Number.isFinite(rawDpr) && rawDpr > 0 ? rawDpr : gl.getPixelRatio() || 1, 1),
-    mode === "mobile" ? 2 : 1.75,
+    touchLayout ? 1 : 1.75,
   );
   const maxPointSize = useMemo(() => readMaxPointSize(gl), [gl]);
   const firstFrameDone = useRef(false);
   const introDone = useRef(false);
 
   const [sample, setSample] = useState<FaceSample | null>(null);
-  const st = useRef({ rotY: 0, rotX: 0, mx: 0, my: 0, intro: reducedMotion ? 1 : 0 });
+  const instantIntro = reducedMotion || touchLayout;
+  const st = useRef({ rotY: 0, rotX: 0, mx: 0, my: 0, intro: instantIntro ? 1 : 0 });
 
   useEffect(() => {
-    if (reducedMotion) st.current.intro = 1;
-  }, [reducedMotion, sample]);
+    if (instantIntro) st.current.intro = 1;
+  }, [instantIntro, sample]);
 
   /* image → point cloud (re-runs whenever `src` or the particle budget changes) */
   useEffect(() => {
     let cancelled = false;
     setSample(null);
-    st.current.intro = reducedMotion ? 1 : 0;
+    st.current.intro = instantIntro ? 1 : 0;
     const anchorCount = mode === "mobile" ? 60 : 110;
-    const maxSize = analysisMaxSize(mode, counts.face);
+    const maxSize = analysisMaxSize(mode, counts.face, touchLayout);
     loadImage(src)
       .then((img) => {
         if (cancelled) return;
@@ -622,17 +656,17 @@ function Scene({
 
   /* layout / sizing – recomputed from the live canvas size & DPR ------------ */
   const layout = useMemo(
-    () => computeLayout(size.width, size.height, sample?.aspect ?? 0.75, mode),
-    [size.width, size.height, sample?.aspect, mode],
+    () => computeLayout(canvasW, canvasH, sample?.aspect ?? 0.75, mode),
+    [canvasW, canvasH, sample?.aspect, mode],
   );
 
   useEffect(() => {
     dbgOnce("pointRange", () => {
       onDebugUpdate?.({ pointSizeRange: `[${readMaxPointSize(gl)}]` });
     });
-    const facePxH = (layout.scale / layout.vh) * size.height; // portrait height in CSS px
+    const facePxH = (layout.scale / layout.vh) * canvasH; // portrait height in CSS px
     const spacing = facePxH * Math.sqrt((sample?.coverage ?? 0.6) / counts.face); // mean star spacing (CSS px)
-    const quadMin = mode === "mobile" ? 3.6 : 3;
+    const quadMin = touchLayout || mode === "mobile" ? 4.5 : 3;
     const quad = Math.max(quadMin, 1.8 * spacing); // sprite quad incl. halo
     const coreR = Math.max(0.12, 1.2 / (quad * dpr)); // core never thinner than ~1.2 device px
     const safeDpr = Number.isFinite(dpr) && dpr > 0 ? dpr : gl.getPixelRatio() || 1;
@@ -645,15 +679,15 @@ function Scene({
     mats.spray.uniforms.uCoreR.value = Math.min(0.34, coreR);
     mats.escape.uniforms.uSize.value = Math.max(quad * 1.1, 4) * BASE_Z;
     mats.escape.uniforms.uCoreR.value = Math.max(coreR, 0.16);
-    mats.hero.uniforms.uSize.value = Math.min(0.036 * size.height * BASE_Z, maxPointSize);
+    mats.hero.uniforms.uSize.value = Math.min(0.036 * canvasH * BASE_Z, maxPointSize);
     mats.hero.uniforms.uCoreR.value = 0.06;
-    mats.near.uniforms.uSize.value = 0.011 * size.height * BASE_Z;
-    mats.node.uniforms.uSize.value = 0.015 * size.height * BASE_Z;
-    mats.star.uniforms.uSize.value = 0.0065 * size.height * BASE_Z;
+    mats.near.uniforms.uSize.value = 0.011 * canvasH * BASE_Z;
+    mats.node.uniforms.uSize.value = 0.015 * canvasH * BASE_Z;
+    mats.star.uniforms.uSize.value = 0.0065 * canvasH * BASE_Z;
     // nebula plane covers the frustum at NEBULA_Z with margin for parallax
     const nebH = 2 * (BASE_Z - NEBULA_Z) * Math.tan((FOV * Math.PI) / 360) * 1.35;
-    nebulaScale.current = [nebH * (size.width / size.height), nebH];
-    mats.nebula.uniforms.uAspect.value = size.width / size.height;
+    nebulaScale.current = [nebH * (canvasW / canvasH), nebH];
+    mats.nebula.uniforms.uAspect.value = canvasW / canvasH;
     mats.nebula.uniforms.uIntensity.value = counts.nebula ? 0.34 : 0;
 
     // depth of field: portrait stays crisp; surrounding layers soften with distance from focus
@@ -676,7 +710,7 @@ function Scene({
     mats.face.uniforms.uBreath.value = reducedMotion ? 0 : 0.006;
     mats.star.uniforms.uParallax.value = 0.06; // only the world-space starfield shears with depth
     for (const m of Object.values(mats)) if (m.uniforms.uPixelRatio) m.uniforms.uPixelRatio.value = safeDpr;
-  }, [layout, size.width, size.height, sample?.coverage, counts.face, counts.nebula, dpr, mats, reducedMotion, gl, maxPointSize, onDebugUpdate, mode]);
+  }, [layout, canvasW, canvasH, sample?.coverage, counts.face, counts.nebula, dpr, mats, reducedMotion, gl, maxPointSize, onDebugUpdate, mode]);
 
   /* mouse ------------------------------------------------------------------- */
   const mouse = useRef({ x: 0, y: 0 });
@@ -715,7 +749,7 @@ function Scene({
     const p = Math.min(1, Math.max(0, progressRef?.current ?? 0));
     const k = Math.min(1, dt * 4.5);
 
-    if (sample) s.intro = reducedMotion ? 1 : Math.min(1, s.intro + dt / 2.4);
+    if (sample) s.intro = instantIntro ? 1 : Math.min(1, s.intro + dt / 2.4);
     if (s.intro >= 1 && !introDone.current) {
       introDone.current = true;
       onIntroComplete?.();
@@ -854,6 +888,8 @@ export interface ParticlePortraitProps {
   mouseEnabled?: boolean;
   /** Pause rendering when false (e.g. hero off-screen). */
   active?: boolean;
+  /** Touch / iOS layout — lower DPR, instant intro, reliable sizing. */
+  touchLayout?: boolean;
   quality?: Quality;
   onReady?: (info: { points: number }) => void;
   onFirstFrame?: () => void;
@@ -898,6 +934,7 @@ export default function ParticlePortrait({
   reducedMotion = false,
   mouseEnabled = true,
   active = true,
+  touchLayout = false,
   quality = "auto",
   onReady,
   onFirstFrame,
@@ -907,11 +944,11 @@ export default function ParticlePortrait({
   const wrapperRef = useRef<HTMLDivElement>(null);
   const invalidateRef = useRef<() => void>(() => {});
   const tier = useMemo(
-    () => (mode === "mobile" ? "low" : quality === "auto" ? detectTier() : quality),
-    [mode, quality],
+    () => (touchLayout || mode === "mobile" ? "low" : quality === "auto" ? detectTier() : quality),
+    [mode, quality, touchLayout],
   );
   const counts = COUNTS[mode][tier];
-  const isMobile = mode === "mobile";
+  const [hostReady, setHostReady] = useState(false);
   const [portraitReady, setPortraitReady] = useState(false);
   const [introComplete, setIntroComplete] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -922,7 +959,35 @@ export default function ParticlePortrait({
     setPortraitReady(false);
     setIntroComplete(false);
     setFailed(false);
-  }, [src, glRetry]);
+    if (!touchLayout) setHostReady(false);
+  }, [src, glRetry, touchLayout]);
+
+  useEffect(() => {
+    const host = wrapperRef.current;
+    if (!host) return;
+    let frames = 0;
+    let cancelled = false;
+    const check = () => {
+      const r = host.getBoundingClientRect();
+      if (r.width >= 2 && r.height >= 2) {
+        setHostReady(true);
+        return true;
+      }
+      return false;
+    };
+    if (check()) return;
+    const ro = new ResizeObserver(check);
+    ro.observe(host);
+    const tick = () => {
+      if (cancelled || check()) return;
+      if (frames++ < 60) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    return () => {
+      cancelled = true;
+      ro.disconnect();
+    };
+  }, []);
 
   useEffect(() => {
     if (!dbg) return;
@@ -980,42 +1045,36 @@ export default function ParticlePortrait({
     if (dbg) setDebugInfo((d) => ({ ...d, error: String(err) }));
   };
 
-  const shouldAnimate = active || !portraitReady || !introComplete;
+  const shouldAnimate = touchLayout || active || !portraitReady || !introComplete;
   const showFallback = failed;
+  const mountCanvas = touchLayout || hostReady;
 
   return (
     <div ref={wrapperRef} className={className} aria-hidden>
       {showFallback ? (
         fallback
-      ) : (
-        <GLBoundary fallback={fallback}>
+      ) : mountCanvas ? (
+        <GLBoundary fallback={null}>
           <Canvas
             key={glRetry}
             frameloop={shouldAnimate ? "always" : "never"}
-            resize={{ scroll: true, debounce: { scroll: 80, resize: 0 } }}
-            dpr={safeDeviceDpr(mode)}
+            resize={{ scroll: false, debounce: { scroll: 50, resize: 0 } }}
+            dpr={safeDeviceDpr(touchLayout, mode)}
             camera={{ position: [0, 0, BASE_Z], fov: FOV, near: 0.1, far: 100 }}
             gl={{
               antialias: false,
               alpha: true,
-              powerPreference: isMobile ? "default" : "high-performance",
+              preserveDrawingBuffer: touchLayout,
+              powerPreference: touchLayout ? "default" : "high-performance",
               stencil: false,
               failIfMajorPerformanceCaveat: false,
             }}
             style={{ position: "absolute", inset: 0, width: "100%", height: "100%", display: "block" }}
-            onCreated={({ gl, invalidate, size: canvasSize }) => {
+            onCreated={({ gl, invalidate }) => {
               invalidateRef.current = invalidate;
               const canvas = gl.domElement;
-              const host = wrapperRef.current;
-              const rect = host?.getBoundingClientRect();
-              const hostW = Math.round(rect?.width ?? canvasSize.width);
-              const hostH = Math.round(rect?.height ?? canvasSize.height);
-              if (hostW >= 2 && hostH >= 2 && (canvasSize.width < 2 || canvasSize.height < 2)) {
-                gl.setSize(hostW, hostH, false);
-                dbgOnce("zeroCanvas", () =>
-                  console.warn("[ParticlePortrait:debug] canvas was 0×0, synced to host", hostW, hostH),
-                );
-              }
+              if (touchLayout) gl.setPixelRatio(1);
+              gl.setClearColor(0x000000, 0);
               dbgOnce("webgl", () => {
                 const range = readMaxPointSize(gl);
                 console.info("[ParticlePortrait:debug] WebGL ok, pointSize max", range);
@@ -1037,11 +1096,12 @@ export default function ParticlePortrait({
               canvas.addEventListener("webglcontextrestored", onRestored);
             }}
           >
-            <HostSizeSync hostRef={wrapperRef} />
+            <HostInvalidateSync hostRef={wrapperRef} touchLayout={touchLayout} />
             <Scene
               src={src}
               progressRef={progressRef}
               mode={mode}
+              touchLayout={touchLayout}
               reducedMotion={reducedMotion}
               mouseEnabled={mouseEnabled}
               counts={counts}
@@ -1053,7 +1113,7 @@ export default function ParticlePortrait({
             />
           </Canvas>
         </GLBoundary>
-      )}
+      ) : null}
       {dbg && <PortraitDebugBadge info={debugInfo} />}
     </div>
   );

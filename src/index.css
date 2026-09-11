@@ -39,6 +39,12 @@ body {
   min-height: 560px;
 }
 
+@supports (height: 1dvh) {
+  .hero-stage {
+    height: 100dvh;
+  }
+}
+
 @supports (height: 1svh) {
   .hero-track {
     height: 300svh;
@@ -46,6 +52,12 @@ body {
 
   .hero-stage {
     height: 100svh;
+  }
+}
+
+@supports (height: 300dvh) {
+  .hero-track {
+    height: 300dvh;
   }
 }
 
@@ -74,12 +86,42 @@ body {
   height: 100%;
   transform: translateZ(0);
   -webkit-transform: translateZ(0);
+  isolation: isolate;
+}
+
+@media (max-width: 1023px) {
+  .hero-canvas-host {
+    /* iOS Safari: escape sticky overflow clipping without leaving the hero viewport */
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 100vh;
+    height: 100dvh;
+    height: 100svh;
+    pointer-events: none;
+  }
+
+  .hero-canvas-host.hero-canvas-host--past {
+    visibility: hidden;
+  }
 }
 
 .hero-canvas-host canvas {
   width: 100% !important;
   height: 100% !important;
   display: block;
+  touch-action: none;
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+}
+
+/* iOS Safari: overflow:hidden on sticky ancestors prevents WebGL compositing */
+@media (max-width: 1023px) {
+  .hero-stage {
+    -webkit-transform: translateZ(0);
+    transform: translateZ(0);
+  }
 }
 
 /* animated dash on highlighted constellation edges */

@@ -33,9 +33,9 @@ export default function Hero() {
   const mode = useLayoutMode();
   const reduced = usePrefersReducedMotion();
   const coarse = useCoarsePointer();
+  const touchLayout = coarse || mode === "mobile" || mode === "tablet";
   const [active, setActive] = useState(true);
   const [ready, setReady] = useState(false);
-  const [portraitLive, setPortraitLive] = useState(false);
   const hasRenderedFrame = useRef(false);
 
   const { scrollYProgress } = useScroll({ target: trackRef, offset: ["start start", "end end"] });
@@ -80,28 +80,24 @@ export default function Hero() {
 
   return (
     <div id="top" ref={trackRef} className={reduced ? "relative hero-stage" : "relative hero-track"}>
-      <div ref={stageRef} className="sticky top-0 hero-stage overflow-hidden">
+      <div ref={stageRef} className="hero-stage sticky top-0 max-lg:overflow-visible lg:overflow-hidden">
         {/* atmosphere */}
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_70%_35%,rgba(56,120,220,0.16),transparent_55%),radial-gradient(ellipse_at_20%_80%,rgba(30,64,175,0.12),transparent_55%)]" />
-
-        {!portraitLive && <HeroPortraitFallback />}
 
         <ParticlePortrait
           src={profile.heroImage}
           progressRef={progressRef}
           mode={mode}
+          touchLayout={touchLayout}
           reducedMotion={reduced}
           mouseEnabled={!coarse && !reduced}
           active={active}
           quality={mode === "mobile" ? "low" : "auto"}
-          onReady={() => {
-            setPortraitLive(true);
-            setReady(true);
-          }}
+          onReady={() => setReady(true)}
           onFirstFrame={() => {
             hasRenderedFrame.current = true;
           }}
-          className="hero-canvas-host z-0"
+          className={`hero-canvas-host z-0${touchLayout && !active ? " hero-canvas-host--past" : ""}`}
           fallback={<HeroPortraitFallback />}
         />
 

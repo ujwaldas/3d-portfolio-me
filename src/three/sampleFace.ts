@@ -53,6 +53,8 @@ export interface FaceSample {
 export interface SampleOptions {
   count: number;
   maxSize?: number;
+  /** Cap source pixels before getImageData (lower on iOS to avoid empty reads). */
+  maxSourcePixels?: number;
   /** total depth range in silhouette-height units */
   depth?: number;
   /** unsharp-mask amount applied to luminance for star brightness (0 = source luminance) */
@@ -101,11 +103,14 @@ export function loadImage(src: string): Promise<HTMLImageElement> {
 const MAX_SOURCE_PIXELS = 12_000_000;
 
 /** Downscale very large photos before getImageData (iOS can return empty data). */
-function prepareImageSource(img: HTMLImageElement): { source: CanvasImageSource; iw: number; ih: number } {
+function prepareImageSource(
+  img: HTMLImageElement,
+  maxPixels = MAX_SOURCE_PIXELS,
+): { source: CanvasImageSource; iw: number; ih: number } {
   let iw = img.naturalWidth;
   let ih = img.naturalHeight;
-  if (iw * ih <= MAX_SOURCE_PIXELS) return { source: img, iw, ih };
-  const scale = Math.sqrt(MAX_SOURCE_PIXELS / (iw * ih));
+  if (iw * ih <= maxPixels) return { source: img, iw, ih };
+  const scale = Math.sqrt(maxPixels / (iw * ih));
   iw = Math.max(2, Math.round(iw * scale));
   ih = Math.max(2, Math.round(ih * scale));
   const canvas = document.createElement("canvas");
@@ -426,7 +431,7 @@ function percentile(v: Float32Array, mask: Uint8Array, q: number) {
  */
 export function sampleFace(img: HTMLImageElement, opts: SampleOptions): FaceSample {
   const maxSize = opts.maxSize ?? 560;
-  const { source, iw, ih } = prepareImageSource(img);
+  const { source, iw, ih } = prepareImageSource(img, opts.maxSourcePixels ?? MAX_SOURCE_PIXELS);
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) throw new Error("2D canvas unavailable");

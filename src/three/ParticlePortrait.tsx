@@ -158,7 +158,7 @@ const pointVert = /* glsl */ `
     vBlur = blur;
     vAlpha = alpha * (1.0 - 0.5 * blur);
     float computedSize = aSize * uSize * uPixelRatio * (1.0 + uSizeGrow * blur) / max(0.1, dist);
-    gl_PointSize = clamp(computedSize, 1.75, min(uMaxPointSize, 64.0));
+    gl_PointSize = clamp(computedSize, 2.5, min(uMaxPointSize, 64.0));
     gl_Position = projectionMatrix * mv;
   }
 `;
@@ -395,14 +395,18 @@ function readMaxPointSize(gl: THREE.WebGLRenderer): number {
   return Number.isFinite(max) ? Math.min(max, 64) : 64;
 }
 
-function sampleFaceWithRetry(img: HTMLImageElement, opts: { count: number; maxSize: number; anchorCount: number }) {
+function sampleFaceWithRetry(
+  img: HTMLImageElement,
+  opts: { count: number; maxSize: number; anchorCount: number; maxSourcePixels?: number },
+) {
   try {
     return sampleFace(img, opts);
   } catch (first) {
-    console.warn("[ParticlePortrait] sampleFace retry at 40% / 320px", first);
+    console.warn("[ParticlePortrait] sampleFace retry at 40% / 256px", first);
     return sampleFace(img, {
       count: Math.max(2000, Math.floor(opts.count * 0.4)),
-      maxSize: 320,
+      maxSize: 256,
+      maxSourcePixels: 1_500_000,
       anchorCount: Math.max(30, Math.floor(opts.anchorCount * 0.5)),
     });
   }
@@ -429,16 +433,19 @@ function safeDeviceDpr(touchLayout: boolean, mode: LayoutMode): number | [number
   return [1, 1.75];
 }
 
-/** Nudge R3F to re-measure when the host resizes — do NOT call gl.setSize (breaks R3F size state). */
-function HostInvalidateSync({
+/** Keep R3F size + camera aspect aligned with the host (critical on iOS where size can stay 0×0). */
+function HostCanvasSync({
   hostRef,
   touchLayout,
 }: {
   hostRef: RefObject<HTMLDivElement | null>;
   touchLayout: boolean;
 }) {
+  const setSize = useThree((s) => s.setSize);
+  const size = useThree((s) => s.size);
   const invalidate = useThree((s) => s.invalidate);
   const advance = useThree((s) => s.advance);
+  const camera = useThree((s) => s.camera);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -447,13 +454,25 @@ function HostInvalidateSync({
     const sync = () => {
       const rect = host.getBoundingClientRect();
       const vp = touchLayout ? readViewportSize() : null;
-      const w = rect.width >= 2 ? rect.width : vp?.w ?? 0;
-      const h = rect.height >= 2 ? rect.height : vp?.h ?? 0;
-      if (w >= 2 && h >= 2) {
-        invalidate();
-        // iOS Safari can leave a blank frame after address-bar resize unless we force one
-        if (touchLayout) advance(0);
+      const w = Math.round(Math.max(rect.width, vp?.w ?? 0));
+      const h = Math.round(Math.max(rect.height, vp?.h ?? 0));
+      if (w < 2 || h < 2) return;
+
+      if (touchLayout && (Math.abs(size.width - w) > 1 || Math.abs(size.height - h) > 1)) {
+        setSize(w, h);
       }
+
+      const cam = camera as THREE.PerspectiveCamera;
+      if (cam.isPerspectiveCamera) {
+        const aspect = w / h;
+        if (Math.abs(cam.aspect - aspect) > 0.001) {
+          cam.aspect = aspect;
+          cam.updateProjectionMatrix();
+        }
+      }
+
+      invalidate();
+      if (touchLayout) advance(0);
     };
 
     sync();
@@ -467,7 +486,7 @@ function HostInvalidateSync({
       vv?.removeEventListener("resize", sync);
       window.removeEventListener("orientationchange", sync);
     };
-  }, [hostRef, invalidate, advance, touchLayout]);
+  }, [hostRef, touchLayout, setSize, size.width, size.height, camera, invalidate, advance]);
 
   return null;
 }
@@ -558,30 +577,37 @@ function Scene({
           console.info("[ParticlePortrait:debug] image loaded", img.naturalWidth, img.naturalHeight, src);
           onDebugUpdate?.({ image: `${img.naturalWidth}x${img.naturalHeight} @ ${src}` });
         });
-        try {
-          const s = sampleFaceWithRetry(img, {
-            count: counts.face,
-            maxSize,
-            anchorCount,
-          });
-          console.info(
-            `[ParticlePortrait] ${src.split("/").pop()} → points=${s.count} bg=${s.bgMode} mask=${s.debug.maskPixels}px analysis=${s.debug.analysisSize.join("x")} aspect=${s.aspect.toFixed(3)} bottomCut=${s.debug.bottomCut} z=[${s.debug.zRange.map((v) => v.toFixed(3)).join(", ")}]`,
-          );
-          dbgOnce("sample", () => {
-            console.info("[ParticlePortrait:debug] sampleFace ok", s.count, s.bgMode, s.debug.analysisSize);
-            onDebugUpdate?.({
-              sample: `points=${s.count} bg=${s.bgMode} analysis=${s.debug.analysisSize.join("x")}`,
+        const runSample = () => {
+          if (cancelled) return;
+          try {
+            const s = sampleFaceWithRetry(img, {
+              count: counts.face,
+              maxSize,
+              anchorCount,
+              maxSourcePixels: touchLayout ? 2_000_000 : undefined,
             });
-          });
-          setSample(s);
-          onReady?.({ points: s.count });
-        } catch (err) {
-          dbgOnce("sampleErr", () => {
-            console.error("[ParticlePortrait:debug] sampleFace threw", err);
-            onDebugUpdate?.({ sample: `ERROR: ${String(err)}` });
-          });
-          onError?.(err);
-        }
+            console.info(
+              `[ParticlePortrait] ${src.split("/").pop()} → points=${s.count} bg=${s.bgMode} mask=${s.debug.maskPixels}px analysis=${s.debug.analysisSize.join("x")} aspect=${s.aspect.toFixed(3)} bottomCut=${s.debug.bottomCut} z=[${s.debug.zRange.map((v) => v.toFixed(3)).join(", ")}]`,
+            );
+            dbgOnce("sample", () => {
+              console.info("[ParticlePortrait:debug] sampleFace ok", s.count, s.bgMode, s.debug.analysisSize);
+              onDebugUpdate?.({
+                sample: `points=${s.count} bg=${s.bgMode} analysis=${s.debug.analysisSize.join("x")}`,
+              });
+            });
+            setSample(s);
+            onReady?.({ points: s.count });
+          } catch (err) {
+            dbgOnce("sampleErr", () => {
+              console.error("[ParticlePortrait:debug] sampleFace threw", err);
+              onDebugUpdate?.({ sample: `ERROR: ${String(err)}` });
+            });
+            onError?.(err);
+          }
+        };
+        // Yield so iOS paints the starfield before heavy canvas readback work
+        if (touchLayout) window.setTimeout(runSample, 0);
+        else runSample();
       })
       .catch((err) => {
         dbgOnce("imageErr", () => {
@@ -666,8 +692,8 @@ function Scene({
     });
     const facePxH = (layout.scale / layout.vh) * canvasH; // portrait height in CSS px
     const spacing = facePxH * Math.sqrt((sample?.coverage ?? 0.6) / counts.face); // mean star spacing (CSS px)
-    const quadMin = touchLayout || mode === "mobile" ? 4.5 : 3;
-    const quad = Math.max(quadMin, 1.8 * spacing); // sprite quad incl. halo
+    const quadMin = touchLayout || mode === "mobile" ? 5.5 : 3;
+    const quad = Math.max(quadMin, 1.8 * spacing) * (touchLayout ? 1.25 : 1); // sprite quad incl. halo
     const coreR = Math.max(0.12, 1.2 / (quad * dpr)); // core never thinner than ~1.2 device px
     const safeDpr = Number.isFinite(dpr) && dpr > 0 ? dpr : gl.getPixelRatio() || 1;
     for (const m of Object.values(mats)) {
@@ -1096,7 +1122,7 @@ export default function ParticlePortrait({
               canvas.addEventListener("webglcontextrestored", onRestored);
             }}
           >
-            <HostInvalidateSync hostRef={wrapperRef} touchLayout={touchLayout} />
+            <HostCanvasSync hostRef={wrapperRef} touchLayout={touchLayout} />
             <Scene
               src={src}
               progressRef={progressRef}

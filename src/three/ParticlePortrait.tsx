@@ -371,17 +371,11 @@ function computeLayout(width: number, height: number, aspect: number, mode: Layo
     const s = Math.min(0.8 * vh, (0.44 * vw) / safeAspect);
     return { scale: s, x: 0.24 * vw, y: -0.04 * vh, vh, vw };
   }
-  if (mode === "tablet") {
-    const s = Math.min(0.64 * vh, (0.5 * vw) / safeAspect);
-    return { scale: s, x: 0.24 * vw, y: 0, vh, vw };
-  }
-  const s = Math.max(0.34 * vh, Math.min(0.46 * vh, (0.88 * vw) / safeAspect));
-  const halfH = s * 0.5;
-  const margin = 0.02 * vh;
-  let y = 0.19 * vh;
-  y = Math.min(y, vh * 0.5 - halfH - margin);
-  y = Math.max(y, -vh * 0.5 + halfH + margin);
-  return { scale: s, x: 0, y, vh, vw };
+  // Mobile uses the same placement math as tablet (proven visible on iOS landscape).
+  // Narrow portrait screens keep the face centred; wider touch layouts offset right like tablet.
+  const s = Math.min(0.64 * vh, (0.5 * vw) / safeAspect);
+  const x = mode === "mobile" && vw < 2.8 ? 0 : 0.24 * vw;
+  return { scale: s, x, y: 0, vh, vw };
 }
 
 function resolveLayoutMode(): LayoutMode {
@@ -831,15 +825,14 @@ function Scene({
       g.scale.setScalar(layout.scale);
     }
 
-    // camera: on mobile portrait, frame the face directly; desktop/tablet use scroll dolly
-    if (mode === "mobile") {
-      camTarget.set(layout.x + s.mx * 0.08, layout.y * 0.55 + s.my * 0.06, BASE_Z * (0.92 - 0.12 * pe));
-      lookTarget.set(layout.x, layout.y, 0);
+    // camera: gentle dolly toward the portrait while scrolling; subtle parallax from the cursor
+    camTarget.set(layout.x * 0.5 * pe + s.mx * 0.14, layout.y * 0.35 * pe + s.my * 0.1 - 0.15 * pe, BASE_Z * (1 - 0.26 * pe));
+    lookTarget.set(layout.x * 0.55 * pe, layout.y * 0.5 * pe, 0);
+    if (touchLayout) {
+      camera.position.copy(camTarget);
     } else {
-      camTarget.set(layout.x * 0.5 * pe + s.mx * 0.14, layout.y * 0.35 * pe + s.my * 0.1 - 0.15 * pe, BASE_Z * (1 - 0.26 * pe));
-      lookTarget.set(layout.x * 0.55 * pe, layout.y * 0.5 * pe, 0);
+      camera.position.lerp(camTarget, k);
     }
-    camera.position.lerp(camTarget, k);
     camera.lookAt(lookTarget);
     const cam = camera as THREE.PerspectiveCamera;
     if (cam.isPerspectiveCamera && canvasW >= 2 && canvasH >= 2) {
@@ -859,38 +852,49 @@ function Scene({
     }
 
     if (touchLayout) {
+      const touchFade = Math.max(fade, 1);
       face.uniforms.uScatter.value = 0;
-      face.uniforms.uOpacity.value = fade;
+      face.uniforms.uOpacity.value = touchFade;
+      spray.uniforms.uScatter.value = 0;
+      spray.uniforms.uOpacity.value = touchFade;
+      hero.uniforms.uScatter.value = 0;
+      hero.uniforms.uOpacity.value = 0.85 * touchFade;
+      escape.uniforms.uScatter.value = 0;
+      escape.uniforms.uOpacity.value = 0.95 * touchFade;
+      near.uniforms.uScatter.value = 0;
+      near.uniforms.uOpacity.value = 0.9 * touchFade;
     } else {
       face.uniforms.uScatter.value = Math.max(introScatter, scrollScatter);
       face.uniforms.uOpacity.value = Math.min(1, s.intro * 2) * fade;
     }
 
-    // spray condenses inward from space slightly after the face; flies outward on scroll-out
-    const sprayIntro = easeOutCubic(Math.max(0, s.intro - 0.1) / 0.9);
-    spray.uniforms.uScatter.value = Math.max(1 - sprayIntro, smoothstep(0.66, 0.98, p));
+    if (!touchLayout) {
+      // spray condenses inward from space slightly after the face; flies outward on scroll-out
+      const sprayIntro = easeOutCubic(Math.max(0, s.intro - 0.1) / 0.9);
+      spray.uniforms.uScatter.value = Math.max(1 - sprayIntro, smoothstep(0.66, 0.98, p));
+      spray.uniforms.uOpacity.value = introT * (1 - smoothstep(0.88, 1, p));
+
+      hero.uniforms.uScatter.value = 0.35 * (1 - easeOutCubic(Math.max(0, s.intro - 0.35) / 0.65));
+      hero.uniforms.uOpacity.value = 0.85 * easeOutCubic(Math.max(0, s.intro - 0.5) / 0.5) * (1 - smoothstep(0.85, 1, p));
+
+      const escIntro = easeOutCubic(Math.max(0, s.intro - 0.15) / 0.85);
+      escape.uniforms.uScatter.value = Math.max(1 - escIntro, smoothstep(0.62, 0.95, p));
+      escape.uniforms.uOpacity.value = 0.95 * introT * (1 - smoothstep(0.85, 1, p));
+
+      near.uniforms.uScatter.value = 0.6 * (1 - easeOutCubic(Math.max(0, s.intro - 0.3) / 0.7));
+      near.uniforms.uOpacity.value = 0.9 * introT * (1 - smoothstep(0.9, 1, p));
+    }
+
     spray.uniforms.uOrbit.value = reducedMotion ? 0.15 : 0.35;
     spray.uniforms.uFlow.value = flow * 0.4;
     spray.uniforms.uDrift.value = 0.003;
-    spray.uniforms.uOpacity.value = introT * (1 - smoothstep(0.88, 1, p));
-
-    // hero stars fade in once the portrait has formed; travel with the constellation late in the scroll
-    hero.uniforms.uScatter.value = 0.35 * (1 - easeOutCubic(Math.max(0, s.intro - 0.35) / 0.65));
     hero.uniforms.uFlow.value = flow * 0.8;
     hero.uniforms.uDrift.value = 0.004;
-    hero.uniforms.uOpacity.value = 0.85 * easeOutCubic(Math.max(0, s.intro - 0.5) / 0.5) * (1 - smoothstep(0.85, 1, p));
-
-    const escIntro = easeOutCubic(Math.max(0, s.intro - 0.15) / 0.85);
-    escape.uniforms.uScatter.value = Math.max(1 - escIntro, smoothstep(0.62, 0.95, p));
     escape.uniforms.uOrbit.value = reducedMotion ? 0.35 : 1;
     escape.uniforms.uFlow.value = flow * 0.6;
     escape.uniforms.uDrift.value = 0.004;
-    escape.uniforms.uOpacity.value = 0.95 * introT * (1 - smoothstep(0.85, 1, p));
-
-    near.uniforms.uScatter.value = 0.6 * (1 - easeOutCubic(Math.max(0, s.intro - 0.3) / 0.7));
     near.uniforms.uFlow.value = flow;
     near.uniforms.uDrift.value = 0.006;
-    near.uniforms.uOpacity.value = 0.9 * introT * (1 - smoothstep(0.9, 1, p));
 
     node.uniforms.uDrift.value = 0.006;
     node.uniforms.uOpacity.value = 0.9 * easeOutCubic(Math.max(0, s.intro - 0.45) / 0.55) * (1 - smoothstep(0.62, 0.9, p));

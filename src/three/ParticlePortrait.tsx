@@ -159,7 +159,9 @@ const pointVert = /* glsl */ `
     vBlur = blur;
     vAlpha = alpha * (1.0 - 0.5 * blur);
     float computedSize = aSize * uSize * uPixelRatio * (1.0 + uSizeGrow * blur) / max(0.1, dist);
-    gl_PointSize = clamp(computedSize, 1.75, min(uMaxPointSize, 64.0));
+    float ptMax = min(uMaxPointSize, 64.0);
+    float ptMin = min(1.75, ptMax);
+    gl_PointSize = clamp(computedSize, ptMin, ptMax);
     gl_Position = projectionMatrix * mv;
   }
 `;
@@ -485,14 +487,17 @@ function HostCanvasSync({ hostRef }: { hostRef: RefObject<HTMLDivElement | null>
     };
 
     sync();
-    scheduleSync(120);
+    for (const delay of [50, 150, 350, 800]) scheduleSync(delay);
 
     const ro = new ResizeObserver(() => scheduleSync(0));
     ro.observe(host);
     const vv = window.visualViewport;
     const onViewportChange = () => scheduleSync(80);
     vv?.addEventListener("resize", onViewportChange);
-    window.addEventListener("orientationchange", () => scheduleSync(150));
+    window.addEventListener("orientationchange", () => {
+      lastSize.current = { w: 0, h: 0 };
+      scheduleSync(150);
+    });
     return () => {
       if (syncTimer.current) clearTimeout(syncTimer.current);
       ro.disconnect();
@@ -537,14 +542,28 @@ function Scene({
   const rawDpr = useThree((s) => s.viewport.dpr);
   const gl = useThree((s) => s.gl);
   const camera = useThree((s) => s.camera);
-  const canvasW =
-    size.width >= 2
-      ? size.width
-      : Math.max(gl.domElement.clientWidth, gl.domElement.getBoundingClientRect().width, 2);
-  const canvasH =
-    size.height >= 2
-      ? size.height
-      : Math.max(gl.domElement.clientHeight, gl.domElement.getBoundingClientRect().height, 2);
+  const [domSize, setDomSize] = useState({ w: 0, h: 0 });
+
+  useEffect(() => {
+    const el = gl.domElement;
+    const measure = () => {
+      const r = el.getBoundingClientRect();
+      const w = Math.round(Math.max(r.width, el.clientWidth, 0));
+      const h = Math.round(Math.max(r.height, el.clientHeight, 0));
+      if (w >= 2 && h >= 2) setDomSize({ w, h });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    window.visualViewport?.addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      window.visualViewport?.removeEventListener("resize", measure);
+    };
+  }, [gl]);
+
+  const canvasW = Math.max(size.width, domSize.w, gl.domElement.clientWidth, 2);
+  const canvasH = Math.max(size.height, domSize.h, gl.domElement.clientHeight, 2);
   const rendererDpr = Math.max(gl.getPixelRatio() || 1, 1);
   const dpr = Math.min(
     Math.max(Number.isFinite(rawDpr) && rawDpr > 0 ? rawDpr : rendererDpr, 1),
@@ -676,11 +695,13 @@ function Scene({
   /* Face geometry mounts async after sampling; defaults are uScatter=1 / uOpacity=0 until useFrame runs. */
   useEffect(() => {
     if (!sample) return;
-    const intro = reducedMotion ? 1 : st.current.intro;
+    const intro = instantIntro ? 1 : st.current.intro;
     mats.face.uniforms.uScatter.value = 0;
     mats.face.uniforms.uOpacity.value = Math.min(1, intro * 2);
     invalidate();
-  }, [sample, faceGeom, mats, reducedMotion, invalidate]);
+    const t = window.setTimeout(invalidate, 100);
+    return () => window.clearTimeout(t);
+  }, [sample, faceGeom, mats, instantIntro, invalidate, canvasW, canvasH]);
 
   const nebulaScale = useRef<[number, number]>([1, 1]);
 
@@ -696,14 +717,16 @@ function Scene({
     });
     const facePxH = (layout.scale / layout.vh) * canvasH; // portrait height in CSS px
     const spacing = facePxH * Math.sqrt((sample?.coverage ?? 0.6) / counts.face); // mean star spacing (CSS px)
-    const quadMin = mode === "mobile" ? 3.6 : 3;
+    const quadMin = mode === "mobile" ? 4.2 : 3;
     const quad = Math.max(quadMin, 1.8 * spacing); // sprite quad incl. halo
     const coreR = Math.max(0.12, 1.2 / (quad * dpr)); // core never thinner than ~1.2 device px
     const safeDpr = rendererDpr;
+    const ptFloor = Math.min(1.75, maxPointSize);
+    const iosPtBoost = ptFloor < 1.75 ? 1.75 / ptFloor : 1;
     for (const m of Object.values(mats)) {
       if (m.uniforms.uMaxPointSize) m.uniforms.uMaxPointSize.value = maxPointSize;
     }
-    mats.face.uniforms.uSize.value = quad * BASE_Z;
+    mats.face.uniforms.uSize.value = quad * BASE_Z * iosPtBoost;
     mats.face.uniforms.uCoreR.value = Math.min(0.34, coreR);
     mats.spray.uniforms.uSize.value = quad * 0.95 * BASE_Z;
     mats.spray.uniforms.uCoreR.value = Math.min(0.34, coreR);
@@ -808,11 +831,24 @@ function Scene({
       g.scale.setScalar(layout.scale);
     }
 
-    // camera: gentle dolly toward the portrait while scrolling; subtle parallax from the cursor
-    camTarget.set(layout.x * 0.5 * pe + s.mx * 0.14, layout.y * 0.35 * pe + s.my * 0.1 - 0.15 * pe, BASE_Z * (1 - 0.26 * pe));
+    // camera: on mobile portrait, frame the face directly; desktop/tablet use scroll dolly
+    if (mode === "mobile") {
+      camTarget.set(layout.x + s.mx * 0.08, layout.y * 0.55 + s.my * 0.06, BASE_Z * (0.92 - 0.12 * pe));
+      lookTarget.set(layout.x, layout.y, 0);
+    } else {
+      camTarget.set(layout.x * 0.5 * pe + s.mx * 0.14, layout.y * 0.35 * pe + s.my * 0.1 - 0.15 * pe, BASE_Z * (1 - 0.26 * pe));
+      lookTarget.set(layout.x * 0.55 * pe, layout.y * 0.5 * pe, 0);
+    }
     camera.position.lerp(camTarget, k);
-    lookTarget.set(layout.x * 0.55 * pe, layout.y * 0.5 * pe, 0);
     camera.lookAt(lookTarget);
+    const cam = camera as THREE.PerspectiveCamera;
+    if (cam.isPerspectiveCamera && canvasW >= 2 && canvasH >= 2) {
+      const aspect = canvasW / canvasH;
+      if (Math.abs(cam.aspect - aspect) > 0.001) {
+        cam.aspect = aspect;
+        cam.updateProjectionMatrix();
+      }
+    }
 
     const focus = g ? camera.position.distanceTo(g.position) : BASE_Z;
     const { face, spray, hero, escape, near, node, star, line, nebula } = mats;
@@ -822,8 +858,13 @@ function Scene({
       (m.uniforms.uMouse.value as THREE.Vector2).set(s.mx, s.my);
     }
 
-    face.uniforms.uScatter.value = Math.max(introScatter, scrollScatter);
-    face.uniforms.uOpacity.value = Math.min(1, s.intro * 2) * fade;
+    if (touchLayout) {
+      face.uniforms.uScatter.value = 0;
+      face.uniforms.uOpacity.value = fade;
+    } else {
+      face.uniforms.uScatter.value = Math.max(introScatter, scrollScatter);
+      face.uniforms.uOpacity.value = Math.min(1, s.intro * 2) * fade;
+    }
 
     // spray condenses inward from space slightly after the face; flies outward on scroll-out
     const sprayIntro = easeOutCubic(Math.max(0, s.intro - 0.1) / 0.9);

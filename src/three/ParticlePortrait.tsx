@@ -106,7 +106,6 @@ const pointVert = /* glsl */ `
   uniform float uDof;
   uniform float uSizeGrow;
   uniform float uMaxPointSize;
-  uniform float uMinPointSize;
   uniform vec2 uMouse;
   attribute vec3 aColor;
   attribute float aSize;
@@ -160,7 +159,7 @@ const pointVert = /* glsl */ `
     vBlur = blur;
     vAlpha = alpha * (1.0 - 0.5 * blur);
     float computedSize = aSize * uSize * uPixelRatio * (1.0 + uSizeGrow * blur) / max(0.1, dist);
-    gl_PointSize = clamp(computedSize, uMinPointSize, min(uMaxPointSize, 64.0));
+    gl_PointSize = clamp(computedSize, 1.75, min(uMaxPointSize, 64.0));
     gl_Position = projectionMatrix * mv;
   }
 `;
@@ -171,8 +170,6 @@ const pointFrag = /* glsl */ `
   uniform float uHalo;
   uniform float uCoreR;
   uniform float uSpike;
-  uniform float uBrightBoost;
-  uniform float uAmbient;
   varying vec3 vColor;
   varying float vAlpha;
   varying float vBlur;
@@ -192,11 +189,8 @@ const pointFrag = /* glsl */ `
     }
     float a = (core + uHalo * halo * (1.0 - 0.5 * vBlur) + spikes) * smoothstep(0.5, 0.42, d);
     a *= vAlpha * uOpacity;
-    vec3 base = max(vColor, vec3(0.06));
-    vec3 col = (base + vec3(uAmbient)) * uBrightBoost;
-    float alpha = a * (uAmbient > 0.0 ? max(uBrightBoost * 0.45, 1.0) : 1.0);
-    if (alpha < 0.0008) discard;
-    gl_FragColor = vec4(col, min(alpha, 1.0));
+    if (a < 0.002) discard;
+    gl_FragColor = vec4(vColor, a);
   }
 `;
 
@@ -285,14 +279,11 @@ function makePointMaterial(opts: { scatter: boolean; orbit?: boolean; twinkle: n
       uDof: { value: 0 },
       uSizeGrow: { value: 0 },
       uMaxPointSize: { value: 64 },
-      uMinPointSize: { value: 2.5 },
       uMouse: { value: new THREE.Vector2() },
       uOpacity: { value: 0 },
       uHalo: { value: opts.halo },
       uCoreR: { value: 0.16 },
       uSpike: { value: opts.spike ?? 0 },
-      uBrightBoost: { value: 1 },
-      uAmbient: { value: 0 },
     },
     transparent: true,
     depthWrite: false,
@@ -448,20 +439,11 @@ function safeDeviceDpr(touchLayout: boolean, mode: LayoutMode): number | [number
   return [1, 1.75];
 }
 
-/** Keep R3F size + camera aspect aligned with the host (critical on iOS where size can stay 0×0). */
-function HostCanvasSync({
-  hostRef,
-  touchLayout,
-}: {
-  hostRef: RefObject<HTMLDivElement | null>;
-  touchLayout: boolean;
-}) {
+/** Keep R3F size + camera aspect aligned with the host (fixes 0×0 canvas on iOS). */
+function HostCanvasSync({ hostRef }: { hostRef: RefObject<HTMLDivElement | null> }) {
   const setSize = useThree((s) => s.setSize);
-  const setDpr = useThree((s) => s.setDpr);
   const size = useThree((s) => s.size);
   const invalidate = useThree((s) => s.invalidate);
-  const advance = useThree((s) => s.advance);
-  const gl = useThree((s) => s.gl);
   const camera = useThree((s) => s.camera);
 
   useEffect(() => {
@@ -470,20 +452,14 @@ function HostCanvasSync({
 
     const sync = () => {
       const rect = host.getBoundingClientRect();
-      const vp = touchLayout ? readViewportSize() : null;
-      const w = Math.round(Math.max(rect.width, vp?.w ?? 0));
-      const h = Math.round(Math.max(rect.height, vp?.h ?? 0));
+      const vp = readViewportSize();
+      // Prefer the host rect — max(rect, viewport) inflates aspect on iOS and misaligns layout vs camera.
+      const w = Math.round(rect.width >= 2 ? rect.width : vp.w);
+      const h = Math.round(rect.height >= 2 ? rect.height : vp.h);
       if (w < 2 || h < 2) return;
 
-      if (touchLayout) {
-        const targetDpr = safeDeviceDpr(true, "mobile") as number;
-        if (Math.abs(gl.getPixelRatio() - targetDpr) > 0.01) {
-          setDpr(targetDpr);
-          gl.setPixelRatio(targetDpr);
-        }
-        if (Math.abs(size.width - w) > 1 || Math.abs(size.height - h) > 1) {
-          setSize(w, h);
-        }
+      if (Math.abs(size.width - w) > 1 || Math.abs(size.height - h) > 1) {
+        setSize(w, h);
       }
 
       const cam = camera as THREE.PerspectiveCamera;
@@ -496,7 +472,6 @@ function HostCanvasSync({
       }
 
       invalidate();
-      if (touchLayout) advance(0);
     };
 
     sync();
@@ -510,7 +485,7 @@ function HostCanvasSync({
       vv?.removeEventListener("resize", sync);
       window.removeEventListener("orientationchange", sync);
     };
-  }, [hostRef, touchLayout, setSize, setDpr, size.width, size.height, camera, gl, invalidate, advance]);
+  }, [hostRef, setSize, size.width, size.height, camera, invalidate]);
 
   return null;
 }
@@ -549,49 +524,35 @@ function Scene({
   const rawDpr = useThree((s) => s.viewport.dpr);
   const gl = useThree((s) => s.gl);
   const camera = useThree((s) => s.camera);
-  const [vpSize, setVpSize] = useState(() => (touchLayout ? readViewportSize() : { w: 0, h: 0 }));
-
-  useEffect(() => {
-    if (!touchLayout) return;
-    const sync = () => setVpSize(readViewportSize());
-    sync();
-    window.visualViewport?.addEventListener("resize", sync);
-    window.addEventListener("orientationchange", sync);
-    return () => {
-      window.visualViewport?.removeEventListener("resize", sync);
-      window.removeEventListener("orientationchange", sync);
-    };
-  }, [touchLayout]);
-
   const canvasW =
     size.width >= 2
       ? size.width
-      : Math.max(gl.domElement.clientWidth, gl.domElement.getBoundingClientRect().width, vpSize.w, 2);
+      : Math.max(gl.domElement.clientWidth, gl.domElement.getBoundingClientRect().width, 2);
   const canvasH =
     size.height >= 2
       ? size.height
-      : Math.max(gl.domElement.clientHeight, gl.domElement.getBoundingClientRect().height, vpSize.h, 2);
+      : Math.max(gl.domElement.clientHeight, gl.domElement.getBoundingClientRect().height, 2);
   const rendererDpr = Math.max(gl.getPixelRatio() || 1, 1);
-  const dpr = touchLayout
-    ? rendererDpr
-    : Math.min(Math.max(Number.isFinite(rawDpr) && rawDpr > 0 ? rawDpr : rendererDpr, 1), 1.75);
+  const dpr = Math.min(
+    Math.max(Number.isFinite(rawDpr) && rawDpr > 0 ? rawDpr : rendererDpr, 1),
+    touchLayout ? 2 : 1.75,
+  );
   const maxPointSize = useMemo(() => readMaxPointSize(gl), [gl]);
   const firstFrameDone = useRef(false);
   const introDone = useRef(false);
 
   const [sample, setSample] = useState<FaceSample | null>(null);
-  const instantIntro = reducedMotion || touchLayout;
-  const st = useRef({ rotY: 0, rotX: 0, mx: 0, my: 0, intro: instantIntro ? 1 : 0 });
+  const st = useRef({ rotY: 0, rotX: 0, mx: 0, my: 0, intro: reducedMotion ? 1 : 0 });
 
   useEffect(() => {
-    if (instantIntro) st.current.intro = 1;
-  }, [instantIntro, sample]);
+    if (reducedMotion) st.current.intro = 1;
+  }, [reducedMotion, sample]);
 
   /* image → point cloud (re-runs whenever `src` or the particle budget changes) */
   useEffect(() => {
     let cancelled = false;
     setSample(null);
-    st.current.intro = instantIntro ? 1 : 0;
+    st.current.intro = reducedMotion ? 1 : 0;
     const anchorCount = mode === "mobile" ? 60 : 110;
     const maxSize = analysisMaxSize(mode, counts.face, touchLayout);
     loadImage(src)
@@ -601,37 +562,31 @@ function Scene({
           console.info("[ParticlePortrait:debug] image loaded", img.naturalWidth, img.naturalHeight, src);
           onDebugUpdate?.({ image: `${img.naturalWidth}x${img.naturalHeight} @ ${src}` });
         });
-        const runSample = () => {
-          if (cancelled) return;
-          try {
-            const s = sampleFaceWithRetry(img, {
-              count: counts.face,
-              maxSize,
-              anchorCount,
-              maxSourcePixels: touchLayout ? 2_000_000 : undefined,
+        try {
+          const s = sampleFaceWithRetry(img, {
+            count: counts.face,
+            maxSize,
+            anchorCount,
+            maxSourcePixels: touchLayout ? 2_000_000 : undefined,
+          });
+          console.info(
+            `[ParticlePortrait] ${src.split("/").pop()} → points=${s.count} bg=${s.bgMode} mask=${s.debug.maskPixels}px analysis=${s.debug.analysisSize.join("x")} aspect=${s.aspect.toFixed(3)} bottomCut=${s.debug.bottomCut} z=[${s.debug.zRange.map((v) => v.toFixed(3)).join(", ")}]`,
+          );
+          dbgOnce("sample", () => {
+            console.info("[ParticlePortrait:debug] sampleFace ok", s.count, s.bgMode, s.debug.analysisSize);
+            onDebugUpdate?.({
+              sample: `points=${s.count} bg=${s.bgMode} analysis=${s.debug.analysisSize.join("x")}`,
             });
-            console.info(
-              `[ParticlePortrait] ${src.split("/").pop()} → points=${s.count} bg=${s.bgMode} mask=${s.debug.maskPixels}px analysis=${s.debug.analysisSize.join("x")} aspect=${s.aspect.toFixed(3)} bottomCut=${s.debug.bottomCut} z=[${s.debug.zRange.map((v) => v.toFixed(3)).join(", ")}]`,
-            );
-            dbgOnce("sample", () => {
-              console.info("[ParticlePortrait:debug] sampleFace ok", s.count, s.bgMode, s.debug.analysisSize);
-              onDebugUpdate?.({
-                sample: `points=${s.count} bg=${s.bgMode} analysis=${s.debug.analysisSize.join("x")}`,
-              });
-            });
-            setSample(s);
-            onReady?.({ points: s.count });
-          } catch (err) {
-            dbgOnce("sampleErr", () => {
-              console.error("[ParticlePortrait:debug] sampleFace threw", err);
-              onDebugUpdate?.({ sample: `ERROR: ${String(err)}` });
-            });
-            onError?.(err);
-          }
-        };
-        // Yield so iOS paints the starfield before heavy canvas readback work
-        if (touchLayout) window.setTimeout(runSample, 0);
-        else runSample();
+          });
+          setSample(s);
+          onReady?.({ points: s.count });
+        } catch (err) {
+          dbgOnce("sampleErr", () => {
+            console.error("[ParticlePortrait:debug] sampleFace threw", err);
+            onDebugUpdate?.({ sample: `ERROR: ${String(err)}` });
+          });
+          onError?.(err);
+        }
       })
       .catch((err) => {
         dbgOnce("imageErr", () => {
@@ -702,6 +657,17 @@ function Scene({
   );
   useEffect(() => () => Object.values(mats).forEach((m) => m.dispose()), [mats]);
 
+  const invalidate = useThree((s) => s.invalidate);
+
+  /* Face geometry mounts async after sampling; defaults are uScatter=1 / uOpacity=0 until useFrame runs. */
+  useEffect(() => {
+    if (!sample) return;
+    const intro = reducedMotion ? 1 : st.current.intro;
+    mats.face.uniforms.uScatter.value = 0;
+    mats.face.uniforms.uOpacity.value = Math.min(1, intro * 2);
+    invalidate();
+  }, [sample, faceGeom, mats, reducedMotion, invalidate]);
+
   const nebulaScale = useRef<[number, number]>([1, 1]);
 
   /* layout / sizing – recomputed from the live canvas size & DPR ------------ */
@@ -716,27 +682,15 @@ function Scene({
     });
     const facePxH = (layout.scale / layout.vh) * canvasH; // portrait height in CSS px
     const spacing = facePxH * Math.sqrt((sample?.coverage ?? 0.6) / counts.face); // mean star spacing (CSS px)
-    const quadMin = touchLayout || mode === "mobile" ? 6 : 3;
-    const quad = Math.max(quadMin, 1.8 * spacing) * (touchLayout ? 1.35 : 1); // sprite quad incl. halo
+    const quadMin = mode === "mobile" ? 3.6 : 3;
+    const quad = Math.max(quadMin, 1.8 * spacing); // sprite quad incl. halo
     const coreR = Math.max(0.12, 1.2 / (quad * dpr)); // core never thinner than ~1.2 device px
     const safeDpr = rendererDpr;
-    const minPt = touchLayout ? 5 : 2.5;
-    const portraitBoost = touchLayout ? 4.2 : 1;
-    const portraitAmbient = touchLayout ? 0.32 : 0;
-    const portraitKeys = new Set(["face", "spray", "hero", "escape", "near", "node"]);
-    for (const [key, m] of Object.entries(mats)) {
+    for (const m of Object.values(mats)) {
       if (m.uniforms.uMaxPointSize) m.uniforms.uMaxPointSize.value = maxPointSize;
-      if (m.uniforms.uMinPointSize) m.uniforms.uMinPointSize.value = minPt;
-      if (m.uniforms.uBrightBoost) {
-        m.uniforms.uBrightBoost.value = portraitKeys.has(key) ? portraitBoost : 1;
-      }
-      if (m.uniforms.uAmbient) {
-        m.uniforms.uAmbient.value = portraitKeys.has(key) ? portraitAmbient : 0;
-      }
     }
     mats.face.uniforms.uSize.value = quad * BASE_Z;
     mats.face.uniforms.uCoreR.value = Math.min(0.34, coreR);
-    mats.face.uniforms.uHalo.value = touchLayout ? 0.55 : 0.3;
     mats.spray.uniforms.uSize.value = quad * 0.95 * BASE_Z;
     mats.spray.uniforms.uCoreR.value = Math.min(0.34, coreR);
     mats.escape.uniforms.uSize.value = Math.max(quad * 1.1, 4) * BASE_Z;
@@ -772,7 +726,7 @@ function Scene({
     mats.face.uniforms.uBreath.value = reducedMotion ? 0 : 0.006;
     mats.star.uniforms.uParallax.value = 0.06; // only the world-space starfield shears with depth
     for (const m of Object.values(mats)) if (m.uniforms.uPixelRatio) m.uniforms.uPixelRatio.value = safeDpr;
-  }, [layout, canvasW, canvasH, sample?.coverage, counts.face, counts.nebula, dpr, rendererDpr, mats, reducedMotion, gl, maxPointSize, onDebugUpdate, mode, touchLayout]);
+  }, [layout, canvasW, canvasH, sample?.coverage, counts.face, counts.nebula, dpr, rendererDpr, mats, reducedMotion, gl, maxPointSize, onDebugUpdate, mode]);
 
   /* mouse ------------------------------------------------------------------- */
   const mouse = useRef({ x: 0, y: 0 });
@@ -811,7 +765,7 @@ function Scene({
     const p = Math.min(1, Math.max(0, progressRef?.current ?? 0));
     const k = Math.min(1, dt * 4.5);
 
-    if (sample) s.intro = instantIntro ? 1 : Math.min(1, s.intro + dt / 2.4);
+    if (sample) s.intro = reducedMotion ? 1 : Math.min(1, s.intro + dt / 2.4);
     if (s.intro >= 1 && !introDone.current) {
       introDone.current = true;
       onIntroComplete?.();
@@ -841,23 +795,10 @@ function Scene({
     }
 
     // camera: gentle dolly toward the portrait while scrolling; subtle parallax from the cursor
-    if (touchLayout) {
-      camTarget.set(layout.x + s.mx * 0.08, layout.y * 0.55 + s.my * 0.06, BASE_Z * 0.92);
-      lookTarget.set(layout.x, layout.y, 0);
-    } else {
-      camTarget.set(layout.x * 0.5 * pe + s.mx * 0.14, layout.y * 0.35 * pe + s.my * 0.1 - 0.15 * pe, BASE_Z * (1 - 0.26 * pe));
-      lookTarget.set(layout.x * 0.55 * pe, layout.y * 0.5 * pe, 0);
-    }
+    camTarget.set(layout.x * 0.5 * pe + s.mx * 0.14, layout.y * 0.35 * pe + s.my * 0.1 - 0.15 * pe, BASE_Z * (1 - 0.26 * pe));
     camera.position.lerp(camTarget, k);
+    lookTarget.set(layout.x * 0.55 * pe, layout.y * 0.5 * pe, 0);
     camera.lookAt(lookTarget);
-    const cam = camera as THREE.PerspectiveCamera;
-    if (touchLayout && cam.isPerspectiveCamera) {
-      const asp = canvasW / canvasH;
-      if (Math.abs(cam.aspect - asp) > 0.001) {
-        cam.aspect = asp;
-        cam.updateProjectionMatrix();
-      }
-    }
 
     const focus = g ? camera.position.distanceTo(g.position) : BASE_Z;
     const { face, spray, hero, escape, near, node, star, line, nebula } = mats;
@@ -867,8 +808,8 @@ function Scene({
       (m.uniforms.uMouse.value as THREE.Vector2).set(s.mx, s.my);
     }
 
-    face.uniforms.uScatter.value = touchLayout ? 0 : Math.max(introScatter, scrollScatter);
-    face.uniforms.uOpacity.value = touchLayout ? fade : Math.min(1, s.intro * 2) * fade;
+    face.uniforms.uScatter.value = Math.max(introScatter, scrollScatter);
+    face.uniforms.uOpacity.value = Math.min(1, s.intro * 2) * fade;
 
     // spray condenses inward from space slightly after the face; flies outward on scroll-out
     const sprayIntro = easeOutCubic(Math.max(0, s.intro - 0.1) / 0.9);
@@ -1035,8 +976,8 @@ export default function ParticlePortrait({
     setPortraitReady(false);
     setIntroComplete(false);
     setFailed(false);
-    if (!touchLayout) setHostReady(false);
-  }, [src, glRetry, touchLayout]);
+    setHostReady(false);
+  }, [src, glRetry]);
 
   useEffect(() => {
     const host = wrapperRef.current;
@@ -1121,9 +1062,9 @@ export default function ParticlePortrait({
     if (dbg) setDebugInfo((d) => ({ ...d, error: String(err) }));
   };
 
-  const shouldAnimate = touchLayout || active || !portraitReady || !introComplete;
+  const shouldAnimate = active || !portraitReady || !introComplete;
   const showFallback = failed;
-  const mountCanvas = touchLayout || hostReady;
+  const mountCanvas = hostReady;
 
   return (
     <div ref={wrapperRef} className={className} aria-hidden>
@@ -1140,8 +1081,7 @@ export default function ParticlePortrait({
             gl={{
               antialias: false,
               alpha: true,
-              preserveDrawingBuffer: touchLayout,
-              powerPreference: touchLayout ? "default" : "high-performance",
+              powerPreference: "high-performance",
               stencil: false,
               failIfMajorPerformanceCaveat: false,
             }}
@@ -1172,7 +1112,7 @@ export default function ParticlePortrait({
               canvas.addEventListener("webglcontextrestored", onRestored);
             }}
           >
-            <HostCanvasSync hostRef={wrapperRef} touchLayout={touchLayout} />
+            <HostCanvasSync hostRef={wrapperRef} />
             <Scene
               src={src}
               progressRef={progressRef}

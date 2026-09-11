@@ -52,8 +52,16 @@ export default function Hero() {
           reducedMotion={reduced}
           mouseEnabled={!coarse && !reduced}
           active={active}
+          quality={mode === "mobile" ? "low" : "auto"}
           onReady={() => setReady(true)}
           className="absolute inset-0"
+          fallback={
+            <img
+              src={profile.heroImage}
+              alt=""
+              className="pointer-events-none absolute inset-x-0 top-[8%] mx-auto h-[42%] w-auto max-w-[88%] object-contain opacity-35 mix-blend-screen"
+            />
+          }
         />
 
         {/* copy */}

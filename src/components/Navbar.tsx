@@ -1,6 +1,7 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { FileText, Menu, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { navLinks, profile } from "../data/portfolio";
 import { cn } from "../utils/cn";
 import { GithubIcon, LinkedinIcon } from "./Icons";
@@ -27,7 +28,9 @@ export default function Navbar() {
     <header
       className={cn(
         "fixed inset-x-0 top-0 z-50 transition-all duration-500",
-        solid ? "border-b border-[#17314d]/70 bg-[#05070d]/80 backdrop-blur-md" : "bg-transparent",
+        open || solid
+          ? "border-b border-[#17314d]/70 bg-[#05070d] backdrop-blur-md"
+          : "bg-transparent",
       )}
     >
       <nav className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
@@ -73,47 +76,51 @@ export default function Navbar() {
         </button>
       </nav>
 
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ opacity: 0, y: -8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            transition={{ duration: 0.25 }}
-            className="fixed inset-x-0 top-16 bottom-0 z-40 flex flex-col border-t border-white/[0.06] bg-[#05070d]/95 px-6 py-8 backdrop-blur-xl md:hidden"
-          >
-            <ul className="space-y-1">
-              {navLinks.map((l, i) => (
-                <motion.li
-                  key={l.href}
-                  initial={{ opacity: 0, x: -12 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: 0.05 * i }}
-                >
-                  <a
-                    href={l.href}
-                    onClick={() => setOpen(false)}
-                    className="block rounded-xl px-3 py-3 text-2xl font-semibold text-white/90 hover:bg-white/5"
-                  >
-                    {l.label}
+      {typeof document !== "undefined" &&
+        createPortal(
+          <AnimatePresence>
+            {open && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.2 }}
+                className="fixed inset-0 z-[200] flex flex-col bg-[#05070d] px-6 pb-8 pt-20 md:hidden"
+              >
+                <ul className="space-y-1">
+                  {navLinks.map((l, i) => (
+                    <motion.li
+                      key={l.href}
+                      initial={{ opacity: 0, x: -12 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: 0.05 * i }}
+                    >
+                      <a
+                        href={l.href}
+                        onClick={() => setOpen(false)}
+                        className="block rounded-xl px-3 py-3 text-2xl font-semibold text-white hover:bg-white/5"
+                      >
+                        {l.label}
+                      </a>
+                    </motion.li>
+                  ))}
+                </ul>
+                <div className="mt-auto flex items-center gap-3 border-t border-white/[0.06] pt-6">
+                  <a href={profile.github} target="_blank" rel="noreferrer" className="flex-1 rounded-xl border border-white/10 px-4 py-3 text-center text-sm text-slate-200">
+                    GitHub
                   </a>
-                </motion.li>
-              ))}
-            </ul>
-            <div className="mt-auto flex items-center gap-3 border-t border-white/[0.06] pt-6">
-              <a href={profile.github} target="_blank" rel="noreferrer" className="flex-1 rounded-xl border border-white/10 px-4 py-3 text-center text-sm text-slate-200">
-                GitHub
-              </a>
-              <a href={profile.linkedin} target="_blank" rel="noreferrer" className="flex-1 rounded-xl border border-white/10 px-4 py-3 text-center text-sm text-slate-200">
-                LinkedIn
-              </a>
-              <a href={profile.resume} target="_blank" rel="noreferrer" className="flex-1 rounded-xl bg-white px-4 py-3 text-center text-sm font-semibold text-slate-950">
-                Resume
-              </a>
-            </div>
-          </motion.div>
+                  <a href={profile.linkedin} target="_blank" rel="noreferrer" className="flex-1 rounded-xl border border-white/10 px-4 py-3 text-center text-sm text-slate-200">
+                    LinkedIn
+                  </a>
+                  <a href={profile.resume} target="_blank" rel="noreferrer" className="flex-1 rounded-xl bg-white px-4 py-3 text-center text-sm font-semibold text-slate-950">
+                    Resume
+                  </a>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>,
+          document.body,
         )}
-      </AnimatePresence>
     </header>
   );
 }

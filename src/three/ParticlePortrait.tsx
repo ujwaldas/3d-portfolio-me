@@ -680,16 +680,28 @@ export default function ParticlePortrait({
 }: ParticlePortraitProps) {
   const tier = useMemo(() => (quality === "auto" ? detectTier() : quality), [quality]);
   const counts = COUNTS[mode][tier];
+  const [portraitReady, setPortraitReady] = useState(false);
+  useEffect(() => setPortraitReady(false), [src]);
+  const handleReady = (info: { points: number }) => {
+    setPortraitReady(true);
+    onReady?.(info);
+  };
   return (
     <div className={className} aria-hidden>
       <GLBoundary fallback={fallback}>
         <Canvas
           // R3F: ResizeObserver → renderer.setSize + camera.aspect/updateProjectionMatrix; dpr clamped & applied
-          frameloop={active ? "always" : "never"}
-          resize={{ scroll: false, debounce: { scroll: 50, resize: 0 } }}
-          dpr={mode === "mobile" ? [1, 1.5] : [1, 1.75]}
+          frameloop={active || !portraitReady ? "always" : "never"}
+          resize={{ scroll: true, debounce: { scroll: 80, resize: 0 } }}
+          dpr={mode === "mobile" ? [1, 1.25] : [1, 1.75]}
           camera={{ position: [0, 0, BASE_Z], fov: FOV, near: 0.1, far: 100 }}
-          gl={{ antialias: false, alpha: true, powerPreference: "high-performance", stencil: false }}
+          gl={{
+            antialias: false,
+            alpha: true,
+            powerPreference: "high-performance",
+            stencil: false,
+            failIfMajorPerformanceCaveat: false,
+          }}
           style={{ position: "absolute", inset: 0, width: "100%", height: "100%", display: "block" }}
         >
           <Scene
@@ -699,7 +711,7 @@ export default function ParticlePortrait({
             reducedMotion={reducedMotion}
             mouseEnabled={mouseEnabled}
             counts={counts}
-            onReady={onReady}
+            onReady={handleReady}
           />
         </Canvas>
       </GLBoundary>

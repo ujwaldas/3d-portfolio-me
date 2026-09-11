@@ -84,7 +84,8 @@ const sstep = (a: number, b: number, x: number) => {
 export function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.crossOrigin = "anonymous";
+    // crossOrigin breaks bundled/data URLs on some mobile browsers
+    if (/^https?:\/\//i.test(src)) img.crossOrigin = "anonymous";
     img.onload = () => resolve(img);
     img.onerror = () => reject(new Error(`Failed to load portrait: ${src}`));
     img.src = src;

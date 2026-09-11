@@ -68,19 +68,6 @@ export default function Hero() {
     return () => io.disconnect();
   }, []);
 
-  useEffect(() => {
-    const onResize = () => window.dispatchEvent(new Event("resize"));
-    const vv = window.visualViewport;
-    vv?.addEventListener("resize", onResize);
-    window.addEventListener("resize", onResize);
-    window.addEventListener("orientationchange", onResize);
-    return () => {
-      vv?.removeEventListener("resize", onResize);
-      window.removeEventListener("resize", onResize);
-      window.removeEventListener("orientationchange", onResize);
-    };
-  }, []);
-
   const staticText = reduced;
 
   return (

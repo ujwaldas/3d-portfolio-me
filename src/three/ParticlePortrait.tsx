@@ -442,9 +442,10 @@ function safeDeviceDpr(touchLayout: boolean, mode: LayoutMode): number | [number
 /** Keep R3F size + camera aspect aligned with the host (fixes 0×0 canvas on iOS). */
 function HostCanvasSync({ hostRef }: { hostRef: RefObject<HTMLDivElement | null> }) {
   const setSize = useThree((s) => s.setSize);
-  const size = useThree((s) => s.size);
   const invalidate = useThree((s) => s.invalidate);
   const camera = useThree((s) => s.camera);
+  const lastSize = useRef({ w: 0, h: 0 });
+  const syncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -453,12 +454,13 @@ function HostCanvasSync({ hostRef }: { hostRef: RefObject<HTMLDivElement | null>
     const sync = () => {
       const rect = host.getBoundingClientRect();
       const vp = readViewportSize();
-      // Prefer the host rect — max(rect, viewport) inflates aspect on iOS and misaligns layout vs camera.
       const w = Math.round(rect.width >= 2 ? rect.width : vp.w);
       const h = Math.round(rect.height >= 2 ? rect.height : vp.h);
       if (w < 2 || h < 2) return;
 
-      if (Math.abs(size.width - w) > 1 || Math.abs(size.height - h) > 1) {
+      const last = lastSize.current;
+      if (Math.abs(last.w - w) > 1 || Math.abs(last.h - h) > 1) {
+        lastSize.current = { w, h };
         setSize(w, h);
       }
 
@@ -474,18 +476,29 @@ function HostCanvasSync({ hostRef }: { hostRef: RefObject<HTMLDivElement | null>
       invalidate();
     };
 
+    const scheduleSync = (delayMs = 0) => {
+      if (syncTimer.current) clearTimeout(syncTimer.current);
+      syncTimer.current = setTimeout(() => {
+        syncTimer.current = null;
+        requestAnimationFrame(() => requestAnimationFrame(sync));
+      }, delayMs);
+    };
+
     sync();
-    const ro = new ResizeObserver(sync);
+    scheduleSync(120);
+
+    const ro = new ResizeObserver(() => scheduleSync(0));
     ro.observe(host);
     const vv = window.visualViewport;
-    vv?.addEventListener("resize", sync);
-    window.addEventListener("orientationchange", sync);
+    const onViewportChange = () => scheduleSync(80);
+    vv?.addEventListener("resize", onViewportChange);
+    window.addEventListener("orientationchange", () => scheduleSync(150));
     return () => {
+      if (syncTimer.current) clearTimeout(syncTimer.current);
       ro.disconnect();
-      vv?.removeEventListener("resize", sync);
-      window.removeEventListener("orientationchange", sync);
+      vv?.removeEventListener("resize", onViewportChange);
     };
-  }, [hostRef, setSize, size.width, size.height, camera, invalidate]);
+  }, [hostRef, setSize, camera, invalidate]);
 
   return null;
 }
@@ -542,17 +555,18 @@ function Scene({
   const introDone = useRef(false);
 
   const [sample, setSample] = useState<FaceSample | null>(null);
-  const st = useRef({ rotY: 0, rotX: 0, mx: 0, my: 0, intro: reducedMotion ? 1 : 0 });
+  const instantIntro = reducedMotion || touchLayout;
+  const st = useRef({ rotY: 0, rotX: 0, mx: 0, my: 0, intro: instantIntro ? 1 : 0 });
 
   useEffect(() => {
-    if (reducedMotion) st.current.intro = 1;
-  }, [reducedMotion, sample]);
+    if (instantIntro) st.current.intro = 1;
+  }, [instantIntro, sample]);
 
   /* image → point cloud (re-runs whenever `src` or the particle budget changes) */
   useEffect(() => {
     let cancelled = false;
     setSample(null);
-    st.current.intro = reducedMotion ? 1 : 0;
+    st.current.intro = instantIntro ? 1 : 0;
     const anchorCount = mode === "mobile" ? 60 : 110;
     const maxSize = analysisMaxSize(mode, counts.face, touchLayout);
     loadImage(src)
@@ -765,7 +779,7 @@ function Scene({
     const p = Math.min(1, Math.max(0, progressRef?.current ?? 0));
     const k = Math.min(1, dt * 4.5);
 
-    if (sample) s.intro = reducedMotion ? 1 : Math.min(1, s.intro + dt / 2.4);
+    if (sample) s.intro = instantIntro ? 1 : Math.min(1, s.intro + dt / 2.4);
     if (s.intro >= 1 && !introDone.current) {
       introDone.current = true;
       onIntroComplete?.();
@@ -992,17 +1006,19 @@ export default function ParticlePortrait({
       }
       return false;
     };
-    if (check()) return;
+    check();
     const ro = new ResizeObserver(check);
     ro.observe(host);
+    window.visualViewport?.addEventListener("resize", check);
     const tick = () => {
       if (cancelled || check()) return;
-      if (frames++ < 60) requestAnimationFrame(tick);
+      if (frames++ < 90) requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
     return () => {
       cancelled = true;
       ro.disconnect();
+      window.visualViewport?.removeEventListener("resize", check);
     };
   }, []);
 
@@ -1075,7 +1091,7 @@ export default function ParticlePortrait({
           <Canvas
             key={glRetry}
             frameloop={shouldAnimate ? "always" : "never"}
-            resize={{ scroll: false, debounce: { scroll: 50, resize: 0 } }}
+            resize={{ scroll: false, debounce: { scroll: 50, resize: 50 } }}
             dpr={safeDeviceDpr(touchLayout, mode)}
             camera={{ position: [0, 0, BASE_Z], fov: FOV, near: 0.1, far: 100 }}
             gl={{

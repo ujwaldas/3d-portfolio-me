@@ -4,6 +4,38 @@ import * as THREE from "three";
 import type { LayoutMode } from "../hooks/useMedia";
 import { buildConstellation, buildStarfield, loadImage, sampleFace, type FaceSample } from "./sampleFace";
 
+const dbg =
+  typeof location !== "undefined" && new URLSearchParams(location.search).has("debugPortrait");
+const dbgLogged = new Set<string>();
+function dbgOnce(key: string, fn: () => void) {
+  if (!dbg || dbgLogged.has(key)) return;
+  dbgLogged.add(key);
+  fn();
+}
+
+export interface PortraitDebugInfo {
+  mode?: string;
+  mq1024?: boolean;
+  mq768?: boolean;
+  innerW?: number;
+  innerH?: number;
+  vvW?: number;
+  vvH?: number;
+  dpr?: number;
+  wrapperRect?: string;
+  canvasBuffer?: string;
+  canvasCss?: string;
+  tier?: string;
+  cores?: number;
+  mem?: number;
+  counts?: string;
+  image?: string;
+  sample?: string;
+  pointSizeRange?: string;
+  contextLost?: boolean;
+  error?: string;
+}
+
 /**
  * <ParticlePortrait src={...} />
  *
@@ -72,6 +104,7 @@ const pointVert = /* glsl */ `
   uniform float uFocus;
   uniform float uDof;
   uniform float uSizeGrow;
+  uniform float uMaxPointSize;
   uniform vec2 uMouse;
   attribute vec3 aColor;
   attribute float aSize;
@@ -125,6 +158,7 @@ const pointVert = /* glsl */ `
     vBlur = blur;
     vAlpha = alpha * (1.0 - 0.5 * blur);
     gl_PointSize = aSize * uSize * uPixelRatio * (1.0 + uSizeGrow * blur) / max(0.1, dist);
+    gl_PointSize = min(max(gl_PointSize, uPixelRatio * 1.1), uMaxPointSize);
     gl_Position = projectionMatrix * mv;
   }
 `;
@@ -154,7 +188,7 @@ const pointFrag = /* glsl */ `
     }
     float a = (core + uHalo * halo * (1.0 - 0.5 * vBlur) + spikes) * smoothstep(0.5, 0.42, d);
     a *= vAlpha * uOpacity;
-    if (a < 0.004) discard;
+    if (a < 0.002) discard;
     gl_FragColor = vec4(vColor, a);
   }
 `;
@@ -243,6 +277,7 @@ function makePointMaterial(opts: { scatter: boolean; orbit?: boolean; twinkle: n
       uFocus: { value: BASE_Z },
       uDof: { value: 0 },
       uSizeGrow: { value: 0 },
+      uMaxPointSize: { value: 64 },
       uMouse: { value: new THREE.Vector2() },
       uOpacity: { value: 0 },
       uHalo: { value: opts.halo },
@@ -334,8 +369,27 @@ function computeLayout(width: number, height: number, aspect: number, mode: Layo
     const s = Math.min(0.64 * vh, (0.5 * vw) / aspect);
     return { scale: s, x: 0.24 * vw, y: 0, vh, vw };
   }
-  const s = Math.min(0.46 * vh, (0.88 * vw) / aspect);
-  return { scale: s, x: 0, y: 0.19 * vh, vh, vw };
+  const s = Math.max(0.34 * vh, Math.min(0.46 * vh, (0.88 * vw) / aspect));
+  const halfH = s * 0.5;
+  const margin = 0.02 * vh;
+  let y = 0.19 * vh;
+  y = Math.min(y, vh * 0.5 - halfH - margin);
+  y = Math.max(y, -vh * 0.5 + halfH + margin);
+  return { scale: s, x: 0, y, vh, vw };
+}
+
+function resolveLayoutMode(): LayoutMode {
+  if (typeof window === "undefined") return "desktop";
+  const desktop = window.matchMedia("(min-width: 1024px)").matches;
+  const tablet = window.matchMedia("(min-width: 768px)").matches;
+  return desktop ? "desktop" : tablet ? "tablet" : "mobile";
+}
+
+function readMaxPointSize(gl: THREE.WebGLRenderer): number {
+  const ctx = gl.getContext() as WebGLRenderingContext;
+  const range = ctx.getParameter(ctx.ALIASED_POINT_SIZE_RANGE) as number[] | Float32Array;
+  const max = Array.isArray(range) || range instanceof Float32Array ? range[1] : 64;
+  return Number.isFinite(max) ? max : 64;
 }
 
 /* ----------------------------- scene ------------------------------------- */
@@ -347,12 +401,33 @@ interface SceneProps {
   mouseEnabled: boolean;
   counts: Counts;
   onReady?: (info: { points: number }) => void;
+  onError?: (err: unknown) => void;
+  onIntroComplete?: () => void;
+  onFirstFrame?: () => void;
+  onDebugUpdate?: (patch: Partial<PortraitDebugInfo>) => void;
 }
 
-function Scene({ src, progressRef, mode, reducedMotion, mouseEnabled, counts, onReady }: SceneProps) {
+function Scene({
+  src,
+  progressRef,
+  mode,
+  reducedMotion,
+  mouseEnabled,
+  counts,
+  onReady,
+  onError,
+  onIntroComplete,
+  onFirstFrame,
+  onDebugUpdate,
+}: SceneProps) {
   const size = useThree((s) => s.size);
-  const dpr = useThree((s) => s.viewport.dpr);
+  const rawDpr = useThree((s) => s.viewport.dpr);
+  const gl = useThree((s) => s.gl);
   const camera = useThree((s) => s.camera);
+  const dpr = Number.isFinite(rawDpr) ? rawDpr : gl.getPixelRatio() || 1;
+  const maxPointSize = useMemo(() => readMaxPointSize(gl), [gl]);
+  const firstFrameDone = useRef(false);
+  const introDone = useRef(false);
 
   const [sample, setSample] = useState<FaceSample | null>(null);
   const st = useRef({ rotY: 0, rotX: 0, mx: 0, my: 0, intro: 0 });
@@ -365,18 +440,42 @@ function Scene({ src, progressRef, mode, reducedMotion, mouseEnabled, counts, on
     loadImage(src)
       .then((img) => {
         if (cancelled) return;
-        const s = sampleFace(img, {
-          count: counts.face,
-          maxSize: counts.face >= 40000 ? 720 : counts.face >= 20000 ? 640 : 560,
-          anchorCount: mode === "mobile" ? 60 : 110,
+        dbgOnce("image", () => {
+          console.info("[ParticlePortrait:debug] image loaded", img.naturalWidth, img.naturalHeight, src);
+          onDebugUpdate?.({ image: `${img.naturalWidth}x${img.naturalHeight} @ ${src}` });
         });
-        console.info(
-          `[ParticlePortrait] ${src.split("/").pop()} → points=${s.count} bg=${s.bgMode} mask=${s.debug.maskPixels}px analysis=${s.debug.analysisSize.join("x")} aspect=${s.aspect.toFixed(3)} bottomCut=${s.debug.bottomCut} z=[${s.debug.zRange.map((v) => v.toFixed(3)).join(", ")}]`,
-        );
-        setSample(s);
-        onReady?.({ points: s.count });
+        try {
+          const s = sampleFace(img, {
+            count: counts.face,
+            maxSize: counts.face >= 40000 ? 720 : counts.face >= 20000 ? 640 : 560,
+            anchorCount: mode === "mobile" ? 60 : 110,
+          });
+          console.info(
+            `[ParticlePortrait] ${src.split("/").pop()} → points=${s.count} bg=${s.bgMode} mask=${s.debug.maskPixels}px analysis=${s.debug.analysisSize.join("x")} aspect=${s.aspect.toFixed(3)} bottomCut=${s.debug.bottomCut} z=[${s.debug.zRange.map((v) => v.toFixed(3)).join(", ")}]`,
+          );
+          dbgOnce("sample", () => {
+            console.info("[ParticlePortrait:debug] sampleFace ok", s.count, s.bgMode, s.debug.analysisSize);
+            onDebugUpdate?.({
+              sample: `points=${s.count} bg=${s.bgMode} analysis=${s.debug.analysisSize.join("x")}`,
+            });
+          });
+          setSample(s);
+          onReady?.({ points: s.count });
+        } catch (err) {
+          dbgOnce("sampleErr", () => {
+            console.error("[ParticlePortrait:debug] sampleFace threw", err);
+            onDebugUpdate?.({ sample: `ERROR: ${String(err)}` });
+          });
+          onError?.(err);
+        }
       })
-      .catch((err) => console.error("[ParticlePortrait]", err));
+      .catch((err) => {
+        dbgOnce("imageErr", () => {
+          console.error("[ParticlePortrait:debug] image load failed", err);
+          onDebugUpdate?.({ image: `ERROR: ${String(err)}` });
+        });
+        onError?.(err);
+      });
     return () => {
       cancelled = true;
     };
@@ -448,17 +547,24 @@ function Scene({ src, progressRef, mode, reducedMotion, mouseEnabled, counts, on
   );
 
   useEffect(() => {
+    dbgOnce("pointRange", () => {
+      onDebugUpdate?.({ pointSizeRange: `[${readMaxPointSize(gl)}]` });
+    });
     const facePxH = (layout.scale / layout.vh) * size.height; // portrait height in CSS px
     const spacing = facePxH * Math.sqrt((sample?.coverage ?? 0.6) / counts.face); // mean star spacing (CSS px)
-    const quad = Math.max(2.2, 1.8 * spacing); // sprite quad incl. halo
-    const coreR = Math.min(0.34, Math.max(0.12, 0.8 / (quad * dpr))); // core never thinner than ~0.8 device px
+    const quad = Math.max(3, 1.8 * spacing); // sprite quad incl. halo
+    const coreR = Math.max(0.12, 1.2 / (quad * dpr)); // core never thinner than ~1.2 device px
+    const safeDpr = Number.isFinite(dpr) && dpr > 0 ? dpr : gl.getPixelRatio() || 1;
+    for (const m of Object.values(mats)) {
+      if (m.uniforms.uMaxPointSize) m.uniforms.uMaxPointSize.value = maxPointSize;
+    }
     mats.face.uniforms.uSize.value = quad * BASE_Z;
-    mats.face.uniforms.uCoreR.value = coreR;
+    mats.face.uniforms.uCoreR.value = Math.min(0.34, coreR);
     mats.spray.uniforms.uSize.value = quad * 0.95 * BASE_Z;
-    mats.spray.uniforms.uCoreR.value = coreR;
+    mats.spray.uniforms.uCoreR.value = Math.min(0.34, coreR);
     mats.escape.uniforms.uSize.value = Math.max(quad * 1.1, 4) * BASE_Z;
     mats.escape.uniforms.uCoreR.value = Math.max(coreR, 0.16);
-    mats.hero.uniforms.uSize.value = 0.036 * size.height * BASE_Z;
+    mats.hero.uniforms.uSize.value = Math.min(0.036 * size.height * BASE_Z, maxPointSize);
     mats.hero.uniforms.uCoreR.value = 0.06;
     mats.near.uniforms.uSize.value = 0.011 * size.height * BASE_Z;
     mats.node.uniforms.uSize.value = 0.015 * size.height * BASE_Z;
@@ -488,8 +594,8 @@ function Scene({ src, progressRef, mode, reducedMotion, mouseEnabled, counts, on
 
     mats.face.uniforms.uBreath.value = reducedMotion ? 0 : 0.006;
     mats.star.uniforms.uParallax.value = 0.06; // only the world-space starfield shears with depth
-    for (const m of Object.values(mats)) if (m.uniforms.uPixelRatio) m.uniforms.uPixelRatio.value = dpr;
-  }, [layout, size.width, size.height, sample?.coverage, counts.face, counts.nebula, dpr, mats, reducedMotion]);
+    for (const m of Object.values(mats)) if (m.uniforms.uPixelRatio) m.uniforms.uPixelRatio.value = safeDpr;
+  }, [layout, size.width, size.height, sample?.coverage, counts.face, counts.nebula, dpr, mats, reducedMotion, gl, maxPointSize, onDebugUpdate]);
 
   /* mouse ------------------------------------------------------------------- */
   const mouse = useRef({ x: 0, y: 0 });
@@ -519,12 +625,20 @@ function Scene({ src, progressRef, mode, reducedMotion, mouseEnabled, counts, on
   const lookTarget = useMemo(() => new THREE.Vector3(), []);
 
   useFrame((state, dt) => {
+    if (!firstFrameDone.current) {
+      firstFrameDone.current = true;
+      onFirstFrame?.();
+    }
     const t = state.clock.elapsedTime;
     const s = st.current;
     const p = Math.min(1, Math.max(0, progressRef?.current ?? 0));
     const k = Math.min(1, dt * 4.5);
 
     if (sample) s.intro = reducedMotion ? 1 : Math.min(1, s.intro + dt / 2.4);
+    if (s.intro >= 1 && !introDone.current) {
+      introDone.current = true;
+      onIntroComplete?.();
+    }
     const introT = easeOutCubic(s.intro);
     const introScatter = 1 - introT;
 
@@ -661,9 +775,39 @@ export interface ParticlePortraitProps {
   active?: boolean;
   quality?: Quality;
   onReady?: (info: { points: number }) => void;
+  onFirstFrame?: () => void;
   className?: string;
   /** Rendered if WebGL is unavailable. */
   fallback?: ReactNode;
+}
+
+function PortraitDebugBadge({ info }: { info: PortraitDebugInfo }) {
+  const lines = [
+    info.mode && `mode: ${info.mode}`,
+    info.mq1024 !== undefined && `mq1024=${info.mq1024} mq768=${info.mq768}`,
+    info.innerW !== undefined && `inner: ${info.innerW}x${info.innerH}`,
+    info.vvW !== undefined && `vv: ${info.vvW}x${info.vvH} dpr=${info.dpr}`,
+    info.wrapperRect && `wrap: ${info.wrapperRect}`,
+    info.canvasBuffer && `buf: ${info.canvasBuffer}`,
+    info.canvasCss && `css: ${info.canvasCss}`,
+    info.tier && `tier: ${info.tier} (${info.cores}c ${info.mem}GB)`,
+    info.counts && `counts: ${info.counts}`,
+    info.image && `img: ${info.image}`,
+    info.sample && `sample: ${info.sample}`,
+    info.pointSizeRange && `ptRange: ${info.pointSizeRange}`,
+    info.contextLost !== undefined && `ctxLost: ${info.contextLost}`,
+    info.error && `err: ${info.error}`,
+  ].filter(Boolean);
+  return (
+    <div
+      className="pointer-events-none fixed bottom-2 left-2 z-[9999] max-w-[min(92vw,360px)] rounded border border-amber-400/40 bg-black/85 px-2 py-1.5 font-mono text-[9px] leading-tight text-amber-100"
+      aria-hidden
+    >
+      {lines.map((l) => (
+        <div key={l}>{l}</div>
+      ))}
+    </div>
+  );
 }
 
 export default function ParticlePortrait({
@@ -675,46 +819,146 @@ export default function ParticlePortrait({
   active = true,
   quality = "auto",
   onReady,
+  onFirstFrame,
   className,
   fallback,
 }: ParticlePortraitProps) {
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const invalidateRef = useRef<() => void>(() => {});
   const tier = useMemo(() => (quality === "auto" ? detectTier() : quality), [quality]);
   const counts = COUNTS[mode][tier];
   const [portraitReady, setPortraitReady] = useState(false);
-  useEffect(() => setPortraitReady(false), [src]);
+  const [introComplete, setIntroComplete] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [glRetry, setGlRetry] = useState(0);
+  const [debugInfo, setDebugInfo] = useState<PortraitDebugInfo>({});
+
+  useEffect(() => {
+    setPortraitReady(false);
+    setIntroComplete(false);
+    setFailed(false);
+  }, [src, glRetry]);
+
+  useEffect(() => {
+    if (!dbg) return;
+    const nav = navigator as Navigator & { deviceMemory?: number };
+    const cores = nav.hardwareConcurrency ?? 0;
+    const mem = nav.deviceMemory ?? 0;
+    const patch: PortraitDebugInfo = {
+      mode: resolveLayoutMode(),
+      mq1024: window.matchMedia("(min-width: 1024px)").matches,
+      mq768: window.matchMedia("(min-width: 768px)").matches,
+      innerW: window.innerWidth,
+      innerH: window.innerHeight,
+      vvW: window.visualViewport?.width,
+      vvH: window.visualViewport?.height,
+      dpr: window.devicePixelRatio,
+      tier,
+      cores,
+      mem,
+      counts: JSON.stringify(counts),
+    };
+    dbgOnce("env", () => console.info("[ParticlePortrait:debug] env", patch));
+    setDebugInfo((d) => ({ ...d, ...patch }));
+  }, [tier, counts, mode]);
+
+  useEffect(() => {
+    if (!dbg) return;
+    const measure = () => {
+      const wrap = wrapperRef.current?.getBoundingClientRect();
+      const canvas = wrapperRef.current?.querySelector("canvas");
+      const patch: Partial<PortraitDebugInfo> = {
+        wrapperRect: wrap ? `${Math.round(wrap.width)}x${Math.round(wrap.height)}` : "n/a",
+        canvasBuffer: canvas ? `${canvas.width}x${canvas.height}` : "n/a",
+        canvasCss: canvas ? `${Math.round(canvas.clientWidth)}x${Math.round(canvas.clientHeight)}` : "n/a",
+      };
+      dbgOnce("layout", () => console.info("[ParticlePortrait:debug] layout", patch));
+      setDebugInfo((d) => ({ ...d, ...patch }));
+    };
+    measure();
+    const t = window.setInterval(measure, 1000);
+    return () => window.clearInterval(t);
+  }, [portraitReady, glRetry]);
+
+  useEffect(() => {
+    if (active) invalidateRef.current();
+  }, [active]);
+
   const handleReady = (info: { points: number }) => {
     setPortraitReady(true);
     onReady?.(info);
   };
+
+  const handleError = (err: unknown) => {
+    console.error("[ParticlePortrait]", err);
+    setFailed(true);
+    if (dbg) setDebugInfo((d) => ({ ...d, error: String(err) }));
+  };
+
+  const shouldAnimate = active || !portraitReady || !introComplete;
+  const showFallback = failed;
+
   return (
-    <div className={className} aria-hidden>
-      <GLBoundary fallback={fallback}>
-        <Canvas
-          // R3F: ResizeObserver → renderer.setSize + camera.aspect/updateProjectionMatrix; dpr clamped & applied
-          frameloop={active || !portraitReady ? "always" : "never"}
-          resize={{ scroll: true, debounce: { scroll: 80, resize: 0 } }}
-          dpr={mode === "mobile" ? [1, 1.25] : [1, 1.75]}
-          camera={{ position: [0, 0, BASE_Z], fov: FOV, near: 0.1, far: 100 }}
-          gl={{
-            antialias: false,
-            alpha: true,
-            powerPreference: "high-performance",
-            stencil: false,
-            failIfMajorPerformanceCaveat: false,
-          }}
-          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", display: "block" }}
-        >
-          <Scene
-            src={src}
-            progressRef={progressRef}
-            mode={mode}
-            reducedMotion={reducedMotion}
-            mouseEnabled={mouseEnabled}
-            counts={counts}
-            onReady={handleReady}
-          />
-        </Canvas>
-      </GLBoundary>
+    <div ref={wrapperRef} className={className} aria-hidden>
+      {showFallback ? (
+        fallback
+      ) : (
+        <GLBoundary fallback={fallback}>
+          <Canvas
+            key={glRetry}
+            frameloop={shouldAnimate ? "always" : "never"}
+            resize={{ scroll: true, debounce: { scroll: 80, resize: 0 } }}
+            dpr={mode === "mobile" ? [1, 1.25] : [1, 1.75]}
+            camera={{ position: [0, 0, BASE_Z], fov: FOV, near: 0.1, far: 100 }}
+            gl={{
+              antialias: false,
+              alpha: true,
+              powerPreference: "high-performance",
+              stencil: false,
+              failIfMajorPerformanceCaveat: false,
+            }}
+            style={{ position: "absolute", inset: 0, width: "100%", height: "100%", display: "block" }}
+            onCreated={({ gl, invalidate }) => {
+              invalidateRef.current = invalidate;
+              const canvas = gl.domElement;
+              dbgOnce("webgl", () => {
+                const range = readMaxPointSize(gl);
+                console.info("[ParticlePortrait:debug] WebGL ok, pointSize max", range);
+                setDebugInfo((d) => ({ ...d, pointSizeRange: String(range) }));
+              });
+              const onLost = (e: Event) => {
+                e.preventDefault();
+                console.warn("[ParticlePortrait] WebGL context lost");
+                setDebugInfo((d) => ({ ...d, contextLost: true }));
+                if (glRetry < 1) setGlRetry((n) => n + 1);
+                else setFailed(true);
+              };
+              const onRestored = () => {
+                console.info("[ParticlePortrait] WebGL context restored");
+                setDebugInfo((d) => ({ ...d, contextLost: false }));
+                invalidate();
+              };
+              canvas.addEventListener("webglcontextlost", onLost);
+              canvas.addEventListener("webglcontextrestored", onRestored);
+            }}
+          >
+            <Scene
+              src={src}
+              progressRef={progressRef}
+              mode={mode}
+              reducedMotion={reducedMotion}
+              mouseEnabled={mouseEnabled}
+              counts={counts}
+              onReady={handleReady}
+              onError={handleError}
+              onIntroComplete={() => setIntroComplete(true)}
+              onFirstFrame={onFirstFrame}
+              onDebugUpdate={(patch) => setDebugInfo((d) => ({ ...d, ...patch }))}
+            />
+          </Canvas>
+        </GLBoundary>
+      )}
+      {dbg && <PortraitDebugBadge info={debugInfo} />}
     </div>
   );
 }

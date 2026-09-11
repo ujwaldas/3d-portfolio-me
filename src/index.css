@@ -29,6 +29,24 @@ body {
   font-family: var(--font-mono);
 }
 
+/* svh fallback — unsupported in older mobile WebViews collapses h-svh to 0 */
+.hero-stage {
+  height: 100vh;
+}
+@supports (height: 100svh) {
+  .hero-stage {
+    height: 100svh;
+  }
+}
+.hero-track {
+  height: 300vh;
+}
+@supports (height: 100svh) {
+  .hero-track {
+    height: 300svh;
+  }
+}
+
 /* animated dash on highlighted constellation edges */
 .edge-flow {
   stroke-dasharray: 5 7;

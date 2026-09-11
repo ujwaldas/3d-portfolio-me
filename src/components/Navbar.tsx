@@ -24,6 +24,15 @@ export default function Navbar() {
     };
   }, [open]);
 
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open]);
+
   return (
     <header
       className={cn(
@@ -70,7 +79,10 @@ export default function Navbar() {
           aria-label={open ? "Close menu" : "Open menu"}
           aria-expanded={open}
           onClick={() => setOpen((v) => !v)}
-          className="inline-flex h-10 w-10 items-center justify-center rounded-full text-white md:hidden"
+          className={cn(
+            "relative inline-flex h-10 w-10 items-center justify-center rounded-full text-white md:hidden",
+            open && "z-[210]",
+          )}
         >
           {open ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
         </button>
@@ -85,9 +97,26 @@ export default function Navbar() {
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.2 }}
-                className="fixed inset-0 z-[200] flex flex-col bg-[#05070d] px-6 pb-8 pt-20 md:hidden"
+                className="fixed inset-0 z-[200] flex flex-col bg-[#05070d] md:hidden"
               >
-                <ul className="space-y-1">
+                <div className="flex h-16 shrink-0 items-center justify-between border-b border-white/[0.06] px-6">
+                  <a
+                    href="#top"
+                    className="text-lg font-bold tracking-tight text-white"
+                    onClick={() => setOpen(false)}
+                  >
+                    {profile.initials}
+                  </a>
+                  <button
+                    type="button"
+                    aria-label="Close menu"
+                    onClick={() => setOpen(false)}
+                    className="inline-flex h-10 w-10 items-center justify-center rounded-full text-white hover:bg-white/5"
+                  >
+                    <X className="h-6 w-6" />
+                  </button>
+                </div>
+                <ul className="flex-1 space-y-1 overflow-y-auto px-6 py-8">
                   {navLinks.map((l, i) => (
                     <motion.li
                       key={l.href}
@@ -105,7 +134,7 @@ export default function Navbar() {
                     </motion.li>
                   ))}
                 </ul>
-                <div className="mt-auto flex items-center gap-3 border-t border-white/[0.06] pt-6">
+                <div className="flex shrink-0 items-center gap-3 border-t border-white/[0.06] px-6 pb-8 pt-6">
                   <a href={profile.github} target="_blank" rel="noreferrer" className="flex-1 rounded-xl border border-white/10 px-4 py-3 text-center text-sm text-slate-200">
                     GitHub
                   </a>

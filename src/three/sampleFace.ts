@@ -84,12 +84,37 @@ const sstep = (a: number, b: number, x: number) => {
 export function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
-    // crossOrigin breaks bundled/data URLs on some mobile browsers
+    // Same-origin HTTPS assets; skip for bundled module URLs / data URLs
     if (/^https?:\/\//i.test(src)) img.crossOrigin = "anonymous";
-    img.onload = () => resolve(img);
+    img.onload = () => {
+      if (img.naturalWidth < 1 || img.naturalHeight < 1) {
+        reject(new Error(`Portrait image has zero dimensions: ${src}`));
+        return;
+      }
+      resolve(img);
+    };
     img.onerror = () => reject(new Error(`Failed to load portrait: ${src}`));
     img.src = src;
   });
+}
+
+const MAX_SOURCE_PIXELS = 12_000_000;
+
+/** Downscale very large photos before getImageData (iOS can return empty data). */
+function prepareImageSource(img: HTMLImageElement): { source: CanvasImageSource; iw: number; ih: number } {
+  let iw = img.naturalWidth;
+  let ih = img.naturalHeight;
+  if (iw * ih <= MAX_SOURCE_PIXELS) return { source: img, iw, ih };
+  const scale = Math.sqrt(MAX_SOURCE_PIXELS / (iw * ih));
+  iw = Math.max(2, Math.round(iw * scale));
+  ih = Math.max(2, Math.round(ih * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = iw;
+  canvas.height = ih;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("2D canvas unavailable");
+  ctx.drawImage(img, 0, 0, iw, ih);
+  return { source: canvas, iw, ih };
 }
 
 /* ------------------------------------------------------------------------ */
@@ -401,7 +426,7 @@ function percentile(v: Float32Array, mask: Uint8Array, q: number) {
  */
 export function sampleFace(img: HTMLImageElement, opts: SampleOptions): FaceSample {
   const maxSize = opts.maxSize ?? 560;
-  const iw = img.naturalWidth, ih = img.naturalHeight;
+  const { source, iw, ih } = prepareImageSource(img);
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) throw new Error("2D canvas unavailable");
@@ -410,7 +435,7 @@ export function sampleFace(img: HTMLImageElement, opts: SampleOptions): FaceSamp
   const w0 = Math.max(2, Math.round(iw * s0)), h0 = Math.max(2, Math.round(ih * s0));
   canvas.width = w0;
   canvas.height = h0;
-  ctx.drawImage(img, 0, 0, w0, h0);
+  ctx.drawImage(source, 0, 0, w0, h0);
   const m0 = computeMask(ctx.getImageData(0, 0, w0, h0).data, w0, h0);
   const b0 = maskBounds(m0.mask, w0, h0);
   if (b0.count < 30) throw new Error("Portrait mask is empty – check the image (needs alpha or a plain background)");
@@ -427,7 +452,7 @@ export function sampleFace(img: HTMLImageElement, opts: SampleOptions): FaceSamp
   ctx.clearRect(0, 0, w, h);
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, w, h);
+  ctx.drawImage(source, sx, sy, sw, sh, 0, 0, w, h);
   return sampleFromPixels(ctx.getImageData(0, 0, w, h).data, w, h, opts);
 }
 

@@ -9,6 +9,9 @@ import heroCutout from "../assets/profile-cutout.png";
  * is needed. Alpha is the mask; brightness only shapes star size/glow. If the file has
  * no alpha channel, a plain light or dark background is keyed out automatically.
  */
+/** Production site URL — used for canonical, sitemap, and Open Graph references. */
+export const siteUrl = "https://ujwaldas-eight.vercel.app";
+
 export const profile = {
   name: "Ujwal Das H S",
   initials: "UD",
@@ -26,7 +29,7 @@ export const profile = {
   heroImage: heroCutout,
   seoTitle: "Ujwal Das H S | Backend Software Engineer",
   seoDescription:
-    "Backend Software Engineer with 4 years of experience building production backend systems using Java, Spring Boot, PostgreSQL, REST APIs, AWS and distributed backend technologies.",
+    "Ujwal Das H S is a Backend Software Engineer specializing in Java, Spring Boot, PostgreSQL, distributed systems, and scalable backend applications.",
 };
 
 export const navLinks = [
@@ -40,6 +43,7 @@ export const navLinks = [
 export const about = {
   heading: "Backend engineer who likes understanding how systems actually work.",
   paragraphs: [
+    "Ujwal Das H S is a Backend Software Engineer with 4+ years of experience building reliable backend systems using Java, Spring Boot, PostgreSQL, distributed systems, and modern backend technologies.",
     "I build and maintain production backend systems with a focus on Java, Spring Boot, PostgreSQL, APIs, integrations, authentication, database design, and production reliability.",
     "I enjoy understanding how application code, databases, infrastructure, messaging and external services interact in real systems.",
   ],

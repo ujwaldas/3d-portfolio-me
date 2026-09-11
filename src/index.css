@@ -91,19 +91,9 @@ body {
 
 @media (max-width: 1023px) {
   .hero-canvas-host {
-    /* iOS Safari: escape sticky overflow clipping without leaving the hero viewport */
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 100vh;
-    height: 100dvh;
-    height: 100svh;
-    pointer-events: none;
-  }
-
-  .hero-canvas-host.hero-canvas-host--past {
-    visibility: hidden;
+    /* Keep absolute inside sticky stage — fixed canvas desyncs portrait from hero layout on iOS */
+    -webkit-transform: translate3d(0, 0, 0);
+    transform: translate3d(0, 0, 0);
   }
 }
 

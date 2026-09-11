@@ -11,7 +11,7 @@ function HeroPortraitFallback() {
       <div className="relative h-full w-full max-w-[340px] overflow-hidden rounded-[2rem] border border-white/[0.08] bg-[#0a1220]/40 shadow-[0_0_80px_rgba(56,120,220,0.12)]">
         <img
           src={profile.heroImage}
-          alt=""
+          alt="Ujwal Das H S - Backend Software Engineer"
           className="h-full w-full object-contain object-top opacity-90 mix-blend-screen"
         />
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_50%_30%,rgba(56,120,220,0.18),transparent_65%)]" />
@@ -97,7 +97,7 @@ export default function Hero() {
           onFirstFrame={() => {
             hasRenderedFrame.current = true;
           }}
-          className={`hero-canvas-host z-0${touchLayout && !active ? " hero-canvas-host--past" : ""}`}
+          className="hero-canvas-host z-0"
           fallback={<HeroPortraitFallback />}
         />
 

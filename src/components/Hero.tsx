@@ -1,9 +1,60 @@
 import { motion, useMotionValueEvent, useScroll, useTransform } from "framer-motion";
 import { ArrowDown } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { profile } from "../data/portfolio";
 import { useCoarsePointer, useLayoutMode, usePrefersReducedMotion } from "../hooks/useMedia";
 import ParticlePortrait from "../three/ParticlePortrait";
+
+/** iOS Safari: WebGL inside sticky/overflow ancestors often fails to composite — portal syncs to the hero stage rect. */
+function TouchCanvasPortal({
+  stageRef,
+  children,
+}: {
+  stageRef: RefObject<HTMLDivElement | null>;
+  children: ReactNode;
+}) {
+  const [box, setBox] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
+
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const sync = () => {
+      const r = el.getBoundingClientRect();
+      if (r.width >= 2 && r.height >= 2) {
+        setBox({ top: r.top, left: r.left, width: r.width, height: r.height });
+      }
+    };
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    window.addEventListener("scroll", sync, { passive: true });
+    window.addEventListener("resize", sync, { passive: true });
+    window.visualViewport?.addEventListener("resize", sync);
+    window.visualViewport?.addEventListener("scroll", sync);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("scroll", sync);
+      window.removeEventListener("resize", sync);
+      window.visualViewport?.removeEventListener("resize", sync);
+      window.visualViewport?.removeEventListener("scroll", sync);
+    };
+  }, [stageRef]);
+
+  if (!box) return null;
+  const root = document.getElementById("root");
+  if (!root) return null;
+
+  return createPortal(
+    <div
+      className="hero-canvas-portal pointer-events-none"
+      style={{ top: box.top, left: box.left, width: box.width, height: box.height }}
+    >
+      {children}
+    </div>,
+    root,
+  );
+}
 
 function HeroPortraitFallback() {
   return (
@@ -84,22 +135,43 @@ export default function Hero() {
         {/* atmosphere */}
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_70%_35%,rgba(56,120,220,0.16),transparent_55%),radial-gradient(ellipse_at_20%_80%,rgba(30,64,175,0.12),transparent_55%)]" />
 
-        <ParticlePortrait
-          src={profile.heroImage}
-          progressRef={progressRef}
-          mode={mode}
-          touchLayout={touchLayout}
-          reducedMotion={reduced}
-          mouseEnabled={!coarse && !reduced}
-          active={active}
-          quality={mode === "mobile" ? "low" : "auto"}
-          onReady={() => setReady(true)}
-          onFirstFrame={() => {
-            hasRenderedFrame.current = true;
-          }}
-          className="hero-canvas-host z-0"
-          fallback={<HeroPortraitFallback />}
-        />
+        {touchLayout ? (
+          <TouchCanvasPortal stageRef={stageRef}>
+            <ParticlePortrait
+              src={profile.heroImage}
+              progressRef={progressRef}
+              mode={mode}
+              touchLayout={touchLayout}
+              reducedMotion={reduced}
+              mouseEnabled={!coarse && !reduced}
+              active={active}
+              quality={mode === "mobile" ? "low" : "auto"}
+              onReady={() => setReady(true)}
+              onFirstFrame={() => {
+                hasRenderedFrame.current = true;
+              }}
+              className="hero-canvas-host"
+              fallback={<HeroPortraitFallback />}
+            />
+          </TouchCanvasPortal>
+        ) : (
+          <ParticlePortrait
+            src={profile.heroImage}
+            progressRef={progressRef}
+            mode={mode}
+            touchLayout={touchLayout}
+            reducedMotion={reduced}
+            mouseEnabled={!coarse && !reduced}
+            active={active}
+            quality={mode === "mobile" ? "low" : "auto"}
+            onReady={() => setReady(true)}
+            onFirstFrame={() => {
+              hasRenderedFrame.current = true;
+            }}
+            className="hero-canvas-host z-0"
+            fallback={<HeroPortraitFallback />}
+          />
+        )}
 
         {/* copy — top padding on mobile so H1 does not cover the portrait */}
         <motion.div

@@ -172,6 +172,7 @@ const pointFrag = /* glsl */ `
   uniform float uCoreR;
   uniform float uSpike;
   uniform float uBrightBoost;
+  uniform float uAmbient;
   varying vec3 vColor;
   varying float vAlpha;
   varying float vBlur;
@@ -191,8 +192,11 @@ const pointFrag = /* glsl */ `
     }
     float a = (core + uHalo * halo * (1.0 - 0.5 * vBlur) + spikes) * smoothstep(0.5, 0.42, d);
     a *= vAlpha * uOpacity;
-    if (a < 0.0008) discard;
-    gl_FragColor = vec4(vColor * uBrightBoost, a);
+    vec3 base = max(vColor, vec3(0.06));
+    vec3 col = (base + vec3(uAmbient)) * uBrightBoost;
+    float alpha = a * (uAmbient > 0.0 ? max(uBrightBoost * 0.45, 1.0) : 1.0);
+    if (alpha < 0.0008) discard;
+    gl_FragColor = vec4(col, min(alpha, 1.0));
   }
 `;
 
@@ -288,6 +292,7 @@ function makePointMaterial(opts: { scatter: boolean; orbit?: boolean; twinkle: n
       uCoreR: { value: 0.16 },
       uSpike: { value: opts.spike ?? 0 },
       uBrightBoost: { value: 1 },
+      uAmbient: { value: 0 },
     },
     transparent: true,
     depthWrite: false,
@@ -715,12 +720,19 @@ function Scene({
     const quad = Math.max(quadMin, 1.8 * spacing) * (touchLayout ? 1.35 : 1); // sprite quad incl. halo
     const coreR = Math.max(0.12, 1.2 / (quad * dpr)); // core never thinner than ~1.2 device px
     const safeDpr = rendererDpr;
-    const minPt = touchLayout ? 4 : 2.5;
-    const brightBoost = touchLayout ? 2.6 : 1;
-    for (const m of Object.values(mats)) {
+    const minPt = touchLayout ? 5 : 2.5;
+    const portraitBoost = touchLayout ? 4.2 : 1;
+    const portraitAmbient = touchLayout ? 0.32 : 0;
+    const portraitKeys = new Set(["face", "spray", "hero", "escape", "near", "node"]);
+    for (const [key, m] of Object.entries(mats)) {
       if (m.uniforms.uMaxPointSize) m.uniforms.uMaxPointSize.value = maxPointSize;
       if (m.uniforms.uMinPointSize) m.uniforms.uMinPointSize.value = minPt;
-      if (m.uniforms.uBrightBoost) m.uniforms.uBrightBoost.value = brightBoost;
+      if (m.uniforms.uBrightBoost) {
+        m.uniforms.uBrightBoost.value = portraitKeys.has(key) ? portraitBoost : 1;
+      }
+      if (m.uniforms.uAmbient) {
+        m.uniforms.uAmbient.value = portraitKeys.has(key) ? portraitAmbient : 0;
+      }
     }
     mats.face.uniforms.uSize.value = quad * BASE_Z;
     mats.face.uniforms.uCoreR.value = Math.min(0.34, coreR);
@@ -829,10 +841,23 @@ function Scene({
     }
 
     // camera: gentle dolly toward the portrait while scrolling; subtle parallax from the cursor
-    camTarget.set(layout.x * 0.5 * pe + s.mx * 0.14, layout.y * 0.35 * pe + s.my * 0.1 - 0.15 * pe, BASE_Z * (1 - 0.26 * pe));
+    if (touchLayout) {
+      camTarget.set(layout.x + s.mx * 0.08, layout.y * 0.55 + s.my * 0.06, BASE_Z * 0.92);
+      lookTarget.set(layout.x, layout.y, 0);
+    } else {
+      camTarget.set(layout.x * 0.5 * pe + s.mx * 0.14, layout.y * 0.35 * pe + s.my * 0.1 - 0.15 * pe, BASE_Z * (1 - 0.26 * pe));
+      lookTarget.set(layout.x * 0.55 * pe, layout.y * 0.5 * pe, 0);
+    }
     camera.position.lerp(camTarget, k);
-    lookTarget.set(layout.x * 0.55 * pe, layout.y * 0.5 * pe, 0);
     camera.lookAt(lookTarget);
+    const cam = camera as THREE.PerspectiveCamera;
+    if (touchLayout && cam.isPerspectiveCamera) {
+      const asp = canvasW / canvasH;
+      if (Math.abs(cam.aspect - asp) > 0.001) {
+        cam.aspect = asp;
+        cam.updateProjectionMatrix();
+      }
+    }
 
     const focus = g ? camera.position.distanceTo(g.position) : BASE_Z;
     const { face, spray, hero, escape, near, node, star, line, nebula } = mats;
@@ -842,8 +867,8 @@ function Scene({
       (m.uniforms.uMouse.value as THREE.Vector2).set(s.mx, s.my);
     }
 
-    face.uniforms.uScatter.value = Math.max(introScatter, scrollScatter);
-    face.uniforms.uOpacity.value = Math.min(1, s.intro * 2) * fade;
+    face.uniforms.uScatter.value = touchLayout ? 0 : Math.max(introScatter, scrollScatter);
+    face.uniforms.uOpacity.value = touchLayout ? fade : Math.min(1, s.intro * 2) * fade;
 
     // spray condenses inward from space slightly after the face; flies outward on scroll-out
     const sprayIntro = easeOutCubic(Math.max(0, s.intro - 0.1) / 0.9);

@@ -89,9 +89,24 @@ body {
   isolation: isolate;
 }
 
+/* Touch portal host — fixed rect synced to the sticky hero stage (escapes iOS WebGL clipping) */
+.hero-canvas-portal {
+  position: fixed;
+  z-index: 5;
+  overflow: hidden;
+  -webkit-transform: translateZ(0);
+  transform: translateZ(0);
+}
+
+.hero-canvas-portal .hero-canvas-host {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
 @media (max-width: 1023px) {
   .hero-canvas-host {
-    /* Keep absolute inside sticky stage — fixed canvas desyncs portrait from hero layout on iOS */
     -webkit-transform: translate3d(0, 0, 0);
     transform: translate3d(0, 0, 0);
   }

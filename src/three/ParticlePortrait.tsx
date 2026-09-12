@@ -371,11 +371,24 @@ function computeLayout(width: number, height: number, aspect: number, mode: Layo
     const s = Math.min(0.8 * vh, (0.44 * vw) / safeAspect);
     return { scale: s, x: 0.24 * vw, y: -0.04 * vh, vh, vw };
   }
-  // Mobile uses the same placement math as tablet (proven visible on iOS landscape).
-  // Narrow portrait screens keep the face centred; wider touch layouts offset right like tablet.
+  if (mode === "tablet") {
+    const s = Math.min(0.64 * vh, (0.5 * vw) / safeAspect);
+    return { scale: s, x: 0.24 * vw, y: 0, vh, vw };
+  }
+  // Mobile only — centred on narrow portrait phones, lifted into upper/mid hero
   const s = Math.min(0.64 * vh, (0.5 * vw) / safeAspect);
-  const x = mode === "mobile" && vw < 2.8 ? 0 : 0.24 * vw;
-  return { scale: s, x, y: 0, vh, vw };
+  const x = vw < 2.8 ? 0 : 0.24 * vw;
+  const y = 0.18 * vh;
+  return { scale: s, x, y, vh, vw };
+}
+
+/** iPhone / iPad Safari — coarse-pointer devices skip mouseEnabled in Hero. */
+function isIOSDevice(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return (
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  );
 }
 
 function resolveLayoutMode(): LayoutMode {
@@ -759,8 +772,13 @@ function Scene({
     for (const m of Object.values(mats)) if (m.uniforms.uPixelRatio) m.uniforms.uPixelRatio.value = safeDpr;
   }, [layout, canvasW, canvasH, sample?.coverage, counts.face, counts.nebula, dpr, rendererDpr, mats, reducedMotion, gl, maxPointSize, onDebugUpdate, mode]);
 
-  /* mouse ------------------------------------------------------------------- */
+  /* pointer / touch parallax ------------------------------------------------ */
   const mouse = useRef({ x: 0, y: 0 });
+  const iosTouch = useRef({ x: 0, y: 0 });
+  const iosTouchOrigin = useRef({ x: 0, y: 0 });
+  const iosTouchActive = useRef(false);
+  const iosParallax = isIOSDevice() && touchLayout && mode === "mobile" && !reducedMotion;
+
   useEffect(() => {
     if (!mouseEnabled) return;
     const onMove = (e: PointerEvent) => {
@@ -778,6 +796,40 @@ function Scene({
       document.removeEventListener("pointerleave", onLeave);
     };
   }, [mouseEnabled]);
+
+  /* iOS Safari: passive touch-drag tilt (canvas is pointer-events:none so pointermove never fires) */
+  useEffect(() => {
+    if (!iosParallax) return;
+    const onStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return;
+      const t = e.touches[0];
+      iosTouchOrigin.current = { x: t.clientX, y: t.clientY };
+      iosTouchActive.current = true;
+    };
+    const onMove = (e: TouchEvent) => {
+      if (!iosTouchActive.current || e.touches.length !== 1) return;
+      const t = e.touches[0];
+      const dx = (t.clientX - iosTouchOrigin.current.x) / window.innerWidth;
+      const dy = (t.clientY - iosTouchOrigin.current.y) / window.innerHeight;
+      iosTouch.current.x = Math.max(-1, Math.min(1, dx * 3.5));
+      iosTouch.current.y = Math.max(-1, Math.min(1, -dy * 3.5));
+    };
+    const onEnd = () => {
+      iosTouchActive.current = false;
+      iosTouch.current.x = 0;
+      iosTouch.current.y = 0;
+    };
+    window.addEventListener("touchstart", onStart, { passive: true });
+    window.addEventListener("touchmove", onMove, { passive: true });
+    window.addEventListener("touchend", onEnd, { passive: true });
+    window.addEventListener("touchcancel", onEnd, { passive: true });
+    return () => {
+      window.removeEventListener("touchstart", onStart);
+      window.removeEventListener("touchmove", onMove);
+      window.removeEventListener("touchend", onEnd);
+      window.removeEventListener("touchcancel", onEnd);
+    };
+  }, [iosParallax]);
 
   /* animation --------------------------------------------------------------- */
   const groupRef = useRef<THREE.Group>(null);
@@ -809,8 +861,10 @@ function Scene({
     const flow = reducedMotion ? 0 : smoothstep(0.6, 1, p);
     const fade = 1 - smoothstep(0.8, 1, p);
 
-    s.mx += ((mouseEnabled ? mouse.current.x : 0) - s.mx) * k;
-    s.my += ((mouseEnabled ? mouse.current.y : 0) - s.my) * k;
+    const parallaxX = mouseEnabled ? mouse.current.x : iosParallax ? iosTouch.current.x : 0;
+    const parallaxY = mouseEnabled ? mouse.current.y : iosParallax ? iosTouch.current.y : 0;
+    s.mx += (parallaxX - s.mx) * k;
+    s.my += (parallaxY - s.my) * k;
 
     // ONE rigid transform for the whole portrait group: small tilt toward the cursor + scroll rotation
     const targetRotY = -0.85 * pe + s.mx * 0.12;

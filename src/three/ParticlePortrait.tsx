@@ -597,7 +597,7 @@ function Scene({
   const introDone = useRef(false);
 
   const [sample, setSample] = useState<FaceSample | null>(null);
-  const instantIntro = reducedMotion || touchLayout;
+  const instantIntro = reducedMotion;
   const st = useRef({ rotY: 0, rotX: 0, mx: 0, my: 0, intro: instantIntro ? 1 : 0 });
 
   useEffect(() => {
@@ -715,16 +715,19 @@ function Scene({
 
   const invalidate = useThree((s) => s.invalidate);
 
-  /* Face geometry mounts async after sampling; defaults are uScatter=1 / uOpacity=0 until useFrame runs. */
+  /* Replay the intro once face geometry is ready (async after sampling). */
   useEffect(() => {
     if (!sample) return;
-    const intro = instantIntro ? 1 : st.current.intro;
-    mats.face.uniforms.uScatter.value = 0;
-    mats.face.uniforms.uOpacity.value = Math.min(1, intro * 2);
+    if (reducedMotion) {
+      st.current.intro = 1;
+    } else {
+      st.current.intro = 0;
+      introDone.current = false;
+    }
     invalidate();
     const t = window.setTimeout(invalidate, 100);
     return () => window.clearTimeout(t);
-  }, [sample, faceGeom, mats, instantIntro, invalidate, canvasW, canvasH]);
+  }, [sample, faceGeom, reducedMotion, invalidate]);
 
   const nebulaScale = useRef<[number, number]>([1, 1]);
 
@@ -921,39 +924,23 @@ function Scene({
       (m.uniforms.uMouse.value as THREE.Vector2).set(s.mx, s.my);
     }
 
-    if (touchLayout) {
-      const touchFade = Math.max(fade, 1);
-      face.uniforms.uScatter.value = 0;
-      face.uniforms.uOpacity.value = touchFade;
-      spray.uniforms.uScatter.value = 0;
-      spray.uniforms.uOpacity.value = touchFade;
-      hero.uniforms.uScatter.value = 0;
-      hero.uniforms.uOpacity.value = 0.85 * touchFade;
-      escape.uniforms.uScatter.value = 0;
-      escape.uniforms.uOpacity.value = 0.95 * touchFade;
-      near.uniforms.uScatter.value = 0;
-      near.uniforms.uOpacity.value = 0.9 * touchFade;
-    } else {
-      face.uniforms.uScatter.value = Math.max(introScatter, scrollScatter);
-      face.uniforms.uOpacity.value = Math.min(1, s.intro * 2) * fade;
-    }
+    face.uniforms.uScatter.value = Math.max(introScatter, scrollScatter);
+    face.uniforms.uOpacity.value = Math.min(1, s.intro * 2) * fade;
 
-    if (!touchLayout) {
-      // spray condenses inward from space slightly after the face; flies outward on scroll-out
-      const sprayIntro = easeOutCubic(Math.max(0, s.intro - 0.1) / 0.9);
-      spray.uniforms.uScatter.value = Math.max(1 - sprayIntro, smoothstep(0.66, 0.98, p));
-      spray.uniforms.uOpacity.value = introT * (1 - smoothstep(0.88, 1, p));
+    // spray condenses inward from space slightly after the face; flies outward on scroll-out
+    const sprayIntro = easeOutCubic(Math.max(0, s.intro - 0.1) / 0.9);
+    spray.uniforms.uScatter.value = Math.max(1 - sprayIntro, smoothstep(0.66, 0.98, p));
+    spray.uniforms.uOpacity.value = introT * (1 - smoothstep(0.88, 1, p));
 
-      hero.uniforms.uScatter.value = 0.35 * (1 - easeOutCubic(Math.max(0, s.intro - 0.35) / 0.65));
-      hero.uniforms.uOpacity.value = 0.85 * easeOutCubic(Math.max(0, s.intro - 0.5) / 0.5) * (1 - smoothstep(0.85, 1, p));
+    hero.uniforms.uScatter.value = 0.35 * (1 - easeOutCubic(Math.max(0, s.intro - 0.35) / 0.65));
+    hero.uniforms.uOpacity.value = 0.85 * easeOutCubic(Math.max(0, s.intro - 0.5) / 0.5) * (1 - smoothstep(0.85, 1, p));
 
-      const escIntro = easeOutCubic(Math.max(0, s.intro - 0.15) / 0.85);
-      escape.uniforms.uScatter.value = Math.max(1 - escIntro, smoothstep(0.62, 0.95, p));
-      escape.uniforms.uOpacity.value = 0.95 * introT * (1 - smoothstep(0.85, 1, p));
+    const escIntro = easeOutCubic(Math.max(0, s.intro - 0.15) / 0.85);
+    escape.uniforms.uScatter.value = Math.max(1 - escIntro, smoothstep(0.62, 0.95, p));
+    escape.uniforms.uOpacity.value = 0.95 * introT * (1 - smoothstep(0.85, 1, p));
 
-      near.uniforms.uScatter.value = 0.6 * (1 - easeOutCubic(Math.max(0, s.intro - 0.3) / 0.7));
-      near.uniforms.uOpacity.value = 0.9 * introT * (1 - smoothstep(0.9, 1, p));
-    }
+    near.uniforms.uScatter.value = 0.6 * (1 - easeOutCubic(Math.max(0, s.intro - 0.3) / 0.7));
+    near.uniforms.uOpacity.value = 0.9 * introT * (1 - smoothstep(0.9, 1, p));
 
     spray.uniforms.uOrbit.value = reducedMotion ? 0.15 : 0.35;
     spray.uniforms.uFlow.value = flow * 0.4;
@@ -1033,7 +1020,7 @@ export interface ParticlePortraitProps {
   mouseEnabled?: boolean;
   /** Pause rendering when false (e.g. hero off-screen). */
   active?: boolean;
-  /** Touch / iOS layout — lower DPR, instant intro, reliable sizing. */
+  /** Touch layout — lower DPR, particle tier, reliable sizing on iOS/Android. */
   touchLayout?: boolean;
   quality?: Quality;
   onReady?: (info: { points: number }) => void;

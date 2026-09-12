@@ -89,7 +89,7 @@ export default function Hero() {
           onFirstFrame={() => {
             hasRenderedFrame.current = true;
           }}
-          className="hero-canvas-host z-0"
+          className="hero-canvas-host"
           fallback={<HeroPortraitFallback />}
         />
 

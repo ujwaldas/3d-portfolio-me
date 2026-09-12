@@ -413,6 +413,25 @@ function isAndroidDevice(): boolean {
   return /Android/i.test(navigator.userAgent);
 }
 
+function probeWebGL(): boolean {
+  if (typeof document === "undefined") return true;
+  try {
+    const canvas = document.createElement("canvas");
+    const attrs = { failIfMajorPerformanceCaveat: false, powerPreference: "default" as WebGLPowerPreference };
+    const gl =
+      canvas.getContext("webgl2", attrs) ??
+      canvas.getContext("webgl", attrs) ??
+      canvas.getContext("experimental-webgl", attrs);
+    return gl != null;
+  } catch {
+    return false;
+  }
+}
+
+function glPowerPreference(touchLayout: boolean): WebGLPowerPreference {
+  return touchLayout || isIOSDevice() ? "default" : "high-performance";
+}
+
 function resolveLayoutMode(): LayoutMode {
   if (typeof window === "undefined") return "desktop";
   const desktop = window.matchMedia("(min-width: 1024px)").matches;
@@ -729,12 +748,16 @@ function Scene({
     } else {
       st.current.intro = 0;
       introDone.current = false;
+      if (touchLayout) {
+        mats.face.uniforms.uScatter.value = 1;
+        mats.face.uniforms.uOpacity.value = isIOSDevice() ? 0.55 : 0.45;
+      }
     }
     invalidate();
     const t = window.setTimeout(invalidate, 100);
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sample, reducedMotion]);
+  }, [sample, reducedMotion, touchLayout]);
 
   const nebulaScale = useRef<[number, number]>([1, 1]);
 
@@ -874,7 +897,8 @@ function Scene({
     const p = Math.min(1, Math.max(0, progressRef?.current ?? 0));
     const k = Math.min(1, dt * 4.5);
 
-    if (sample) s.intro = instantIntro ? 1 : Math.min(1, s.intro + dt / 2.4);
+    const introRate = touchLayout && isIOSDevice() ? 1.9 : 2.4;
+    if (sample) s.intro = instantIntro ? 1 : Math.min(1, s.intro + dt / introRate);
     if (s.intro >= 1 && !introDone.current) {
       introDone.current = true;
       onIntroComplete?.();
@@ -931,11 +955,13 @@ function Scene({
       (m.uniforms.uMouse.value as THREE.Vector2).set(s.mx, s.my);
     }
 
-    const faceScatter = Math.max(introScatter, scrollScatter);
-    const faceOpacityBase = Math.min(1, s.intro * 2);
+    const iosFormed = isIOSDevice() && touchLayout && s.intro >= 0.88;
+    const faceScatter = iosFormed ? scrollScatter : Math.max(introScatter, scrollScatter);
+    const faceOpacityBase = iosFormed ? 1 : Math.min(1, s.intro * 2);
+    const faceOpacityFloor = isIOSDevice() ? 0.55 : 0.45;
     face.uniforms.uScatter.value = faceScatter;
     face.uniforms.uOpacity.value = touchLayout
-      ? touchLayerOpacity(faceOpacityBase, faceScatter, fade, 0.45)
+      ? iosFormed ? fade : touchLayerOpacity(faceOpacityBase, faceScatter, fade, faceOpacityFloor)
       : faceOpacityBase * fade;
 
     // spray condenses inward from space slightly after the face; flies outward on scroll-out
@@ -1023,13 +1049,20 @@ function Scene({
 }
 
 /* ----------------------------- boundary ---------------------------------- */
-class GLBoundary extends Component<{ children: ReactNode; fallback?: ReactNode }, { failed: boolean }> {
+class GLBoundary extends Component<
+  { children: ReactNode; fallback?: ReactNode; onFail?: () => void },
+  { failed: boolean }
+> {
   state = { failed: false };
   static getDerivedStateFromError() {
     return { failed: true };
   }
   componentDidCatch(err: unknown) {
     console.error("[ParticlePortrait] WebGL failed", err);
+    this.props.onFail?.();
+  }
+  componentDidUpdate(_: unknown, prev: { failed: boolean }) {
+    if (this.state.failed && !prev.failed) this.props.onFail?.();
   }
   render() {
     return this.state.failed ? (this.props.fallback ?? null) : this.props.children;
@@ -1112,8 +1145,17 @@ export default function ParticlePortrait({
   const [portraitReady, setPortraitReady] = useState(false);
   const [introComplete, setIntroComplete] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [webglOk, setWebglOk] = useState(true);
   const [glRetry, setGlRetry] = useState(0);
   const [debugInfo, setDebugInfo] = useState<PortraitDebugInfo>({});
+
+  useEffect(() => {
+    if (!probeWebGL()) {
+      console.warn("[ParticlePortrait] WebGL unavailable — using fallback");
+      setWebglOk(false);
+      setFailed(true);
+    }
+  }, []);
 
   useEffect(() => {
     setPortraitReady(false);
@@ -1207,16 +1249,17 @@ export default function ParticlePortrait({
     if (dbg) setDebugInfo((d) => ({ ...d, error: String(err) }));
   };
 
-  const shouldAnimate = active || !portraitReady || !introComplete;
-  const showFallback = failed;
-  const mountCanvas = hostReady;
+  const shouldAnimate =
+    active || !portraitReady || !introComplete || (touchLayout && isIOSDevice() && !introComplete);
+  const showFallback = failed || !webglOk;
+  const mountCanvas = hostReady && webglOk;
 
   return (
     <div ref={wrapperRef} className={className} aria-hidden>
       {showFallback ? (
         fallback
       ) : mountCanvas ? (
-        <GLBoundary fallback={null}>
+        <GLBoundary fallback={fallback} onFail={() => setFailed(true)}>
           <Canvas
             key={glRetry}
             frameloop={shouldAnimate ? "always" : "never"}
@@ -1226,7 +1269,7 @@ export default function ParticlePortrait({
             gl={{
               antialias: false,
               alpha: true,
-              powerPreference: "high-performance",
+              powerPreference: glPowerPreference(touchLayout),
               stencil: false,
               failIfMajorPerformanceCaveat: false,
             }}
@@ -1234,6 +1277,12 @@ export default function ParticlePortrait({
             onCreated={({ gl, invalidate }) => {
               invalidateRef.current = invalidate;
               const canvas = gl.domElement;
+              const ctx = gl.getContext();
+              if (!ctx) {
+                console.error("[ParticlePortrait] WebGL context is null after create");
+                setFailed(true);
+                return;
+              }
               gl.setClearColor(0x000000, 0);
               if (dbg) setDebugInfo((d) => ({ ...d, glDpr: gl.getPixelRatio() }));
               dbgOnce("webgl", () => {

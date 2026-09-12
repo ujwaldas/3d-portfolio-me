@@ -928,13 +928,12 @@ function Scene({
       (m.uniforms.uMouse.value as THREE.Vector2).set(s.mx, s.my);
     }
 
-    const iosFormed = isIOSDevice() && touchLayout && s.intro >= 0.88;
-    const faceScatter = iosFormed ? scrollScatter : Math.max(introScatter, scrollScatter);
-    const faceOpacityBase = iosFormed ? 1 : Math.min(1, s.intro * 2);
+    const faceScatter = Math.max(introScatter, scrollScatter);
+    const faceOpacityBase = Math.min(1, s.intro * 2);
     const faceOpacityFloor = isIOSDevice() ? 0.55 : 0.45;
     face.uniforms.uScatter.value = faceScatter;
     face.uniforms.uOpacity.value = touchLayout
-      ? iosFormed ? fade : touchLayerOpacity(faceOpacityBase, faceScatter, fade, faceOpacityFloor)
+      ? touchLayerOpacity(faceOpacityBase, faceScatter, fade, faceOpacityFloor)
       : faceOpacityBase * fade;
 
     // spray condenses inward from space slightly after the face; flies outward on scroll-out
@@ -1057,6 +1056,7 @@ export interface ParticlePortraitProps {
   touchLayout?: boolean;
   quality?: Quality;
   onReady?: (info: { points: number }) => void;
+  onIntroComplete?: () => void;
   onFirstFrame?: () => void;
   className?: string;
   /** Rendered if WebGL is unavailable. */
@@ -1100,6 +1100,7 @@ export default function ParticlePortrait({
   touchLayout = false,
   quality = "auto",
   onReady,
+  onIntroComplete,
   onFirstFrame,
   className,
   fallback,
@@ -1206,6 +1207,20 @@ export default function ParticlePortrait({
     if (active) invalidateRef.current();
   }, [active]);
 
+  /* Touch/iOS: scroll and viewport changes must wake the compositor + render loop */
+  useEffect(() => {
+    if (!touchLayout) return;
+    const bump = () => invalidateRef.current();
+    window.addEventListener("scroll", bump, { passive: true });
+    window.visualViewport?.addEventListener("scroll", bump);
+    window.visualViewport?.addEventListener("resize", bump);
+    return () => {
+      window.removeEventListener("scroll", bump);
+      window.visualViewport?.removeEventListener("scroll", bump);
+      window.visualViewport?.removeEventListener("resize", bump);
+    };
+  }, [touchLayout]);
+
   const handleReady = (info: { points: number }) => {
     setPortraitReady(true);
     onReady?.(info);
@@ -1217,8 +1232,7 @@ export default function ParticlePortrait({
     if (dbg) setDebugInfo((d) => ({ ...d, error: String(err) }));
   };
 
-  const shouldAnimate =
-    active || !portraitReady || !introComplete || (touchLayout && isIOSDevice() && !introComplete);
+  const shouldAnimate = active || !portraitReady || !introComplete;
   const showFallback = failed;
   const mountCanvas = webglOk && !failed;
 
@@ -1252,6 +1266,14 @@ export default function ParticlePortrait({
                 return;
               }
               gl.setClearColor(0x000000, 0);
+              if (touchLayout || isIOSDevice()) {
+                let frames = 0;
+                const kick = () => {
+                  invalidate();
+                  if (++frames < 180) requestAnimationFrame(kick);
+                };
+                requestAnimationFrame(kick);
+              }
               if (dbg) setDebugInfo((d) => ({ ...d, glDpr: gl.getPixelRatio() }));
               dbgOnce("webgl", () => {
                 const range = readMaxPointSize(gl);
@@ -1285,7 +1307,10 @@ export default function ParticlePortrait({
               counts={counts}
               onReady={handleReady}
               onError={handleError}
-              onIntroComplete={() => setIntroComplete(true)}
+              onIntroComplete={() => {
+                setIntroComplete(true);
+                onIntroComplete?.();
+              }}
               onFirstFrame={onFirstFrame}
               onDebugUpdate={(patch) => setDebugInfo((d) => ({ ...d, ...patch }))}
             />

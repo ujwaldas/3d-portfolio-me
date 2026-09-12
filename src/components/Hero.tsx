@@ -36,10 +36,9 @@ export default function Hero() {
   const touchLayout = coarse || mode === "mobile" || mode === "tablet";
   const [active, setActive] = useState(true);
   const [ready, setReady] = useState(false);
-  const [sceneReady, setSceneReady] = useState(false);
+  const [introComplete, setIntroComplete] = useState(false);
   const [painted, setPainted] = useState(false);
   const hasRenderedFrame = useRef(false);
-  const readyTimer = useRef<number | null>(null);
 
   const { scrollYProgress } = useScroll({ target: trackRef, offset: ["start start", "end end"] });
 
@@ -53,58 +52,42 @@ export default function Hero() {
 
   /* iOS Safari: framer useScroll can skip during inertial scroll — mirror progress from geometry */
   useEffect(() => {
-    const onScroll = () => {
+    const updateProgress = () => {
       const el = trackRef.current;
       if (!el) return;
       const rect = el.getBoundingClientRect();
-      const total = el.offsetHeight - window.innerHeight;
+      const vh = window.visualViewport?.height ?? window.innerHeight;
+      const total = el.offsetHeight - vh;
       if (total > 0) {
         progressRef.current = Math.min(1, Math.max(0, -rect.top / total));
       }
     };
-    window.addEventListener("scroll", onScroll, { passive: true });
-    onScroll();
-    return () => window.removeEventListener("scroll", onScroll);
+    updateProgress();
+    window.addEventListener("scroll", updateProgress, { passive: true });
+    window.visualViewport?.addEventListener("scroll", updateProgress);
+    window.visualViewport?.addEventListener("resize", updateProgress);
+    return () => {
+      window.removeEventListener("scroll", updateProgress);
+      window.visualViewport?.removeEventListener("scroll", updateProgress);
+      window.visualViewport?.removeEventListener("resize", updateProgress);
+    };
   }, []);
-
-  useEffect(() => () => {
-    if (readyTimer.current) window.clearTimeout(readyTimer.current);
-  }, []);
-
-  useEffect(() => {
-    if (painted) return;
-    const id = window.requestAnimationFrame(() => setPainted(true));
-    return () => window.cancelAnimationFrame(id);
-  }, [painted]);
 
   const textOpacity = useTransform(scrollYProgress, [0, 0.28, 0.58], [1, 1, 0]);
   const textY = useTransform(scrollYProgress, [0, 0.58], [0, -56]);
   const hintOpacity = useTransform(scrollYProgress, [0, 0.08], [1, 0]);
 
-  /* Observe the sticky STAGE (not the 300vh track). active starts true so the first frame
-     always runs; IO may only pause after the canvas has rendered at least once. */
+  /* Observe the scroll track — sticky stage stays visible for the whole 300vh hero. */
   useEffect(() => {
-    const el = stageRef.current;
+    const el = trackRef.current;
     if (!el) return;
-    const io = new IntersectionObserver(([e]) => {
-      if (!hasRenderedFrame.current) {
-        if (e.isIntersecting) setActive(true);
-        return;
-      }
-      setActive(e.isIntersecting);
-    }, { rootMargin: "120px 0px", threshold: 0 });
+    const io = new IntersectionObserver(([e]) => setActive(e.isIntersecting), { rootMargin: "80px 0px", threshold: 0 });
     io.observe(el);
     return () => io.disconnect();
   }, []);
 
-  const running = active || !painted || !sceneReady;
+  const canvasActive = active || !painted || !introComplete;
   const staticText = reduced;
-
-  const handlePortraitReady = () => {
-    setReady(true);
-    if (readyTimer.current) window.clearTimeout(readyTimer.current);
-    readyTimer.current = window.setTimeout(() => setSceneReady(true), 1600);
-  };
 
   return (
     <div id="top" ref={trackRef} className={reduced ? "relative hero-stage" : "relative hero-track"}>
@@ -120,9 +103,10 @@ export default function Hero() {
             touchLayout={touchLayout}
             reducedMotion={reduced}
             mouseEnabled={!coarse && !reduced}
-            active={running}
+            active={canvasActive}
             quality={mode === "mobile" ? "low" : "auto"}
-            onReady={handlePortraitReady}
+            onReady={() => setReady(true)}
+            onIntroComplete={() => setIntroComplete(true)}
             onFirstFrame={() => {
               hasRenderedFrame.current = true;
               setPainted(true);

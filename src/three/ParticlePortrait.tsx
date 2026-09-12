@@ -868,17 +868,19 @@ function Scene({
   const camTarget = useMemo(() => new THREE.Vector3(), []);
   const lookTarget = useMemo(() => new THREE.Vector3(), []);
 
-  useFrame((state, dt) => {
+  useFrame((state, rawDt) => {
     if (!firstFrameDone.current) {
       firstFrameDone.current = true;
       onFirstFrame?.();
     }
+    /* iOS often delivers a huge first dt after WebGL init, which would skip the dust intro. */
+    const dt = Math.min(Math.max(rawDt, 0), 1 / 30);
     const t = state.clock.elapsedTime;
     const s = st.current;
     const p = Math.min(1, Math.max(0, progressRef?.current ?? 0));
     const k = Math.min(1, dt * 4.5);
 
-    const introRate = touchLayout && isIOSDevice() ? 1.9 : 2.4;
+    const introRate = touchLayout && isIOSDevice() ? 2.8 : 2.4;
     if (sample) s.intro = instantIntro ? 1 : Math.min(1, s.intro + dt / introRate);
     if (s.intro >= 1 && !introDone.current) {
       introDone.current = true;
@@ -930,7 +932,7 @@ function Scene({
 
     const faceScatter = Math.max(introScatter, scrollScatter);
     const faceOpacityBase = Math.min(1, s.intro * 2);
-    const faceOpacityFloor = isIOSDevice() ? 0.55 : 0.45;
+    const faceOpacityFloor = isIOSDevice() ? 0.22 + 0.38 * introT : 0.45;
     face.uniforms.uScatter.value = faceScatter;
     face.uniforms.uOpacity.value = touchLayout
       ? touchLayerOpacity(faceOpacityBase, faceScatter, fade, faceOpacityFloor)

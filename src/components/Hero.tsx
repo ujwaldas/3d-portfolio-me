@@ -31,9 +31,12 @@ export default function Hero() {
   const stageRef = useRef<HTMLDivElement>(null);
   const progressRef = useRef(0);
   const mode = useLayoutMode();
-  const reduced = usePrefersReducedMotion();
+  const reducedPref = usePrefersReducedMotion();
   const coarse = useCoarsePointer();
   const touchLayout = coarse || mode === "mobile" || mode === "tablet";
+  /* iOS Accessibility → Reduce Motion is commonly on and would skip the hero cinematic.
+     Keep dust/scroll animation on touch; still honor reduced motion on desktop. */
+  const reduced = reducedPref && !touchLayout;
   const [active, setActive] = useState(true);
   const [ready, setReady] = useState(false);
   const [introComplete, setIntroComplete] = useState(false);

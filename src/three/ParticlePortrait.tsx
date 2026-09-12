@@ -4,8 +4,17 @@ import * as THREE from "three";
 import type { LayoutMode } from "../hooks/useMedia";
 import { buildConstellation, buildStarfield, loadImage, sampleFace, type FaceSample } from "./sampleFace";
 
-const dbg =
-  typeof location !== "undefined" && new URLSearchParams(location.search).has("debugPortrait");
+function isPortraitDebug(): boolean {
+  if (typeof location === "undefined") return false;
+  const params = new URLSearchParams(location.search);
+  return (
+    params.get("debugPortrait") === "1" ||
+    params.get("debugPortal") === "1" ||
+    params.has("debugPortrait") ||
+    params.has("debugPortal")
+  );
+}
+const dbg = isPortraitDebug();
 const dbgLogged = new Set<string>();
 function dbgOnce(key: string, fn: () => void) {
   if (!dbg || dbgLogged.has(key)) return;
@@ -91,6 +100,7 @@ function detectTier(): "high" | "low" {
 
 /* ----------------------------- shaders ----------------------------------- */
 const pointVert = /* glsl */ `
+  precision highp float;
   uniform float uTime;
   uniform float uSize;
   uniform float uPixelRatio;
@@ -158,16 +168,15 @@ const pointVert = /* glsl */ `
     float blur = clamp(abs(dist - uFocus) * uDof, 0.0, 1.0);
     vBlur = blur;
     vAlpha = alpha * (1.0 - 0.5 * blur);
-    float computedSize = aSize * uSize * uPixelRatio * (1.0 + uSizeGrow * blur) / max(0.1, dist);
-    float ptMax = min(uMaxPointSize, 64.0);
-    float ptMin = min(1.75, ptMax);
-    gl_PointSize = clamp(computedSize, ptMin, ptMax);
+    float ps = aSize * uSize * uPixelRatio * (1.0 + uSizeGrow * blur) / max(0.1, dist);
+    gl_PointSize = clamp(ps, uPixelRatio * 1.05, uMaxPointSize);
     gl_Position = projectionMatrix * mv;
   }
 `;
 
 // star sprite: luminous gaussian core + wide soft halo (+ 4-point diffraction flare on bright stars)
 const pointFrag = /* glsl */ `
+  precision highp float;
   uniform float uOpacity;
   uniform float uHalo;
   uniform float uCoreR;
@@ -198,6 +207,7 @@ const pointFrag = /* glsl */ `
 
 /* nebula: procedural fbm clouds on a far plane, additive & very subtle */
 const nebulaVert = /* glsl */ `
+  precision highp float;
   varying vec2 vUv;
   void main() {
     vUv = uv;
@@ -205,6 +215,7 @@ const nebulaVert = /* glsl */ `
   }
 `;
 const nebulaFrag = /* glsl */ `
+  precision highp float;
   uniform float uTime;
   uniform float uAspect;
   uniform float uIntensity;
@@ -235,6 +246,7 @@ const nebulaFrag = /* glsl */ `
 `;
 
 const lineVert = /* glsl */ `
+  precision highp float;
   uniform float uTime;
   attribute vec3 aLineColor;
   attribute float aPhase;
@@ -249,6 +261,7 @@ const lineVert = /* glsl */ `
 `;
 
 const lineFrag = /* glsl */ `
+  precision highp float;
   uniform float uOpacity;
   varying vec3 vColor;
   varying float vA;
@@ -280,7 +293,7 @@ function makePointMaterial(opts: { scatter: boolean; orbit?: boolean; twinkle: n
       uFocus: { value: BASE_Z },
       uDof: { value: 0 },
       uSizeGrow: { value: 0 },
-      uMaxPointSize: { value: 64 },
+      uMaxPointSize: { value: 512 },
       uMouse: { value: new THREE.Vector2() },
       uOpacity: { value: 0 },
       uHalo: { value: opts.halo },
@@ -386,10 +399,9 @@ function computeLayout(
   // Touch portrait phones (iOS + Android) — tall viewport, narrow width
   const portraitPhone = touchLayout && h > w && w < 768;
   if (mode === "mobile" || portraitPhone) {
-    const s = Math.min(0.64 * vh, (0.5 * vw) / safeAspect);
-    const x = vw < 2.8 ? 0 : 0.24 * vw;
-    const yLift = isIOSDevice() ? 0.28 : isAndroidDevice() ? 0.26 : 0.24;
-    return { scale: s, x, y: yLift * vh, vh, vw };
+    const s = Math.min(0.38 * vh, (0.78 * vw) / safeAspect);
+    const yLift = isIOSDevice() ? 0.28 : isAndroidDevice() ? 0.26 : 0.27;
+    return { scale: s, x: 0, y: yLift * vh, vh, vw };
   }
   if (mode === "tablet") {
     const s = Math.min(0.64 * vh, (0.5 * vw) / safeAspect);
@@ -443,7 +455,7 @@ function readMaxPointSize(gl: THREE.WebGLRenderer): number {
   const ctx = gl.getContext() as WebGLRenderingContext;
   const range = ctx.getParameter(ctx.ALIASED_POINT_SIZE_RANGE) as number[] | Float32Array;
   const max = Array.isArray(range) || range instanceof Float32Array ? range[1] : 64;
-  return Number.isFinite(max) ? Math.min(max, 64) : 64;
+  return Number.isFinite(max) ? Math.min(max, 1024) : 64;
 }
 
 function sampleFaceWithRetry(
@@ -493,7 +505,6 @@ function safeDeviceDpr(touchLayout: boolean, mode: LayoutMode): number | [number
 function HostCanvasSync({ hostRef }: { hostRef: RefObject<HTMLDivElement | null> }) {
   const setSize = useThree((s) => s.setSize);
   const invalidate = useThree((s) => s.invalidate);
-  const camera = useThree((s) => s.camera);
   const lastSize = useRef({ w: 0, h: 0 });
   const syncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -512,15 +523,6 @@ function HostCanvasSync({ hostRef }: { hostRef: RefObject<HTMLDivElement | null>
       if (Math.abs(last.w - w) > 1 || Math.abs(last.h - h) > 1) {
         lastSize.current = { w, h };
         setSize(w, h);
-      }
-
-      const cam = camera as THREE.PerspectiveCamera;
-      if (cam.isPerspectiveCamera) {
-        const aspect = w / h;
-        if (Math.abs(cam.aspect - aspect) > 0.001) {
-          cam.aspect = aspect;
-          cam.updateProjectionMatrix();
-        }
       }
 
       invalidate();
@@ -551,7 +553,7 @@ function HostCanvasSync({ hostRef }: { hostRef: RefObject<HTMLDivElement | null>
       ro.disconnect();
       vv?.removeEventListener("resize", onViewportChange);
     };
-  }, [hostRef, setSize, camera, invalidate]);
+  }, [hostRef, setSize, invalidate]);
 
   return null;
 }
@@ -590,28 +592,9 @@ function Scene({
   const rawDpr = useThree((s) => s.viewport.dpr);
   const gl = useThree((s) => s.gl);
   const camera = useThree((s) => s.camera);
-  const [domSize, setDomSize] = useState({ w: 0, h: 0 });
 
-  useEffect(() => {
-    const el = gl.domElement;
-    const measure = () => {
-      const r = el.getBoundingClientRect();
-      const w = Math.round(Math.max(r.width, el.clientWidth, 0));
-      const h = Math.round(Math.max(r.height, el.clientHeight, 0));
-      if (w >= 2 && h >= 2) setDomSize({ w, h });
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    window.visualViewport?.addEventListener("resize", measure);
-    return () => {
-      ro.disconnect();
-      window.visualViewport?.removeEventListener("resize", measure);
-    };
-  }, [gl]);
-
-  const canvasW = Math.max(size.width, domSize.w, gl.domElement.clientWidth, 2);
-  const canvasH = Math.max(size.height, domSize.h, gl.domElement.clientHeight, 2);
+  const viewW = Math.max(size.width, 2);
+  const viewH = Math.max(size.height, 2);
   const rendererDpr = Math.max(gl.getPixelRatio() || 1, 1);
   const dpr = Math.min(
     Math.max(Number.isFinite(rawDpr) && rawDpr > 0 ? rawDpr : rendererDpr, 1),
@@ -763,40 +746,38 @@ function Scene({
 
   /* layout / sizing – recomputed from the live canvas size & DPR ------------ */
   const layout = useMemo(
-    () => computeLayout(canvasW, canvasH, sample?.aspect ?? 0.75, mode, touchLayout),
-    [canvasW, canvasH, sample?.aspect, mode, touchLayout],
+    () => computeLayout(viewW, viewH, sample?.aspect ?? 0.75, mode, touchLayout),
+    [viewW, viewH, sample?.aspect, mode, touchLayout],
   );
 
   useEffect(() => {
     dbgOnce("pointRange", () => {
       onDebugUpdate?.({ pointSizeRange: `[${readMaxPointSize(gl)}]` });
     });
-    const facePxH = (layout.scale / layout.vh) * canvasH; // portrait height in CSS px
+    const facePxH = (layout.scale / layout.vh) * viewH; // portrait height in CSS px
     const spacing = facePxH * Math.sqrt((sample?.coverage ?? 0.6) / counts.face); // mean star spacing (CSS px)
     const quadMin = mode === "mobile" ? 4.2 : 3;
     const quad = Math.max(quadMin, 1.8 * spacing); // sprite quad incl. halo
     const coreR = Math.max(0.12, 1.2 / (quad * dpr)); // core never thinner than ~1.2 device px
     const safeDpr = rendererDpr;
-    const ptFloor = Math.min(1.75, maxPointSize);
-    const iosPtBoost = ptFloor < 1.75 ? 1.75 / ptFloor : 1;
     for (const m of Object.values(mats)) {
       if (m.uniforms.uMaxPointSize) m.uniforms.uMaxPointSize.value = maxPointSize;
     }
-    mats.face.uniforms.uSize.value = quad * BASE_Z * iosPtBoost;
+    mats.face.uniforms.uSize.value = quad * BASE_Z;
     mats.face.uniforms.uCoreR.value = Math.min(0.34, coreR);
     mats.spray.uniforms.uSize.value = quad * 0.95 * BASE_Z;
     mats.spray.uniforms.uCoreR.value = Math.min(0.34, coreR);
     mats.escape.uniforms.uSize.value = Math.max(quad * 1.1, 4) * BASE_Z;
     mats.escape.uniforms.uCoreR.value = Math.max(coreR, 0.16);
-    mats.hero.uniforms.uSize.value = Math.min(0.036 * canvasH * BASE_Z, maxPointSize);
+    mats.hero.uniforms.uSize.value = 0.036 * viewH * BASE_Z;
     mats.hero.uniforms.uCoreR.value = 0.06;
-    mats.near.uniforms.uSize.value = 0.011 * canvasH * BASE_Z;
-    mats.node.uniforms.uSize.value = 0.015 * canvasH * BASE_Z;
-    mats.star.uniforms.uSize.value = 0.0065 * canvasH * BASE_Z;
+    mats.near.uniforms.uSize.value = 0.011 * viewH * BASE_Z;
+    mats.node.uniforms.uSize.value = 0.015 * viewH * BASE_Z;
+    mats.star.uniforms.uSize.value = 0.0065 * viewH * BASE_Z;
     // nebula plane covers the frustum at NEBULA_Z with margin for parallax
     const nebH = 2 * (BASE_Z - NEBULA_Z) * Math.tan((FOV * Math.PI) / 360) * 1.35;
-    nebulaScale.current = [nebH * (canvasW / canvasH), nebH];
-    mats.nebula.uniforms.uAspect.value = canvasW / canvasH;
+    nebulaScale.current = [nebH * (viewW / viewH), nebH];
+    mats.nebula.uniforms.uAspect.value = viewW / viewH;
     mats.nebula.uniforms.uIntensity.value = counts.nebula ? 0.34 : 0;
 
     // depth of field: portrait stays crisp; surrounding layers soften with distance from focus
@@ -819,7 +800,7 @@ function Scene({
     mats.face.uniforms.uBreath.value = reducedMotion ? 0 : 0.006;
     mats.star.uniforms.uParallax.value = 0.06; // only the world-space starfield shears with depth
     for (const m of Object.values(mats)) if (m.uniforms.uPixelRatio) m.uniforms.uPixelRatio.value = safeDpr;
-  }, [layout, canvasW, canvasH, sample?.coverage, counts.face, counts.nebula, dpr, rendererDpr, mats, reducedMotion, gl, maxPointSize, onDebugUpdate, mode]);
+  }, [layout, viewW, viewH, sample?.coverage, counts.face, counts.nebula, dpr, rendererDpr, mats, reducedMotion, gl, maxPointSize, onDebugUpdate, mode]);
 
   /* pointer / touch parallax ------------------------------------------------ */
   const mouse = useRef({ x: 0, y: 0 });
@@ -938,14 +919,6 @@ function Scene({
       camera.position.lerp(camTarget, k);
     }
     camera.lookAt(lookTarget);
-    const cam = camera as THREE.PerspectiveCamera;
-    if (cam.isPerspectiveCamera && canvasW >= 2 && canvasH >= 2) {
-      const aspect = canvasW / canvasH;
-      if (Math.abs(cam.aspect - aspect) > 0.001) {
-        cam.aspect = aspect;
-        cam.updateProjectionMatrix();
-      }
-    }
 
     const focus = g ? camera.position.distanceTo(g.position) : BASE_Z;
     const { face, spray, hero, escape, near, node, star, line, nebula } = mats;
@@ -1109,10 +1082,7 @@ function PortraitDebugBadge({ info }: { info: PortraitDebugInfo }) {
     info.error && `err: ${info.error}`,
   ].filter(Boolean);
   return (
-    <div
-      className="pointer-events-none fixed top-14 right-2 z-[60] max-h-[38vh] max-w-[min(88vw,300px)] overflow-y-auto rounded border border-amber-400/40 bg-black/90 px-2 py-1 font-mono text-[8px] leading-tight text-amber-100 opacity-80"
-      aria-hidden
-    >
+    <div className="portrait-debug-badge" aria-hidden>
       {lines.map((l) => (
         <div key={l}>{l}</div>
       ))}
@@ -1151,9 +1121,7 @@ export default function ParticlePortrait({
 
   useEffect(() => {
     if (!probeWebGL()) {
-      console.warn("[ParticlePortrait] WebGL unavailable — using fallback");
-      setWebglOk(false);
-      setFailed(true);
+      console.warn("[ParticlePortrait] WebGL probe failed — will still attempt Canvas");
     }
   }, []);
 
@@ -1251,8 +1219,8 @@ export default function ParticlePortrait({
 
   const shouldAnimate =
     active || !portraitReady || !introComplete || (touchLayout && isIOSDevice() && !introComplete);
-  const showFallback = failed || !webglOk;
-  const mountCanvas = hostReady && webglOk;
+  const showFallback = failed;
+  const mountCanvas = webglOk && !failed;
 
   return (
     <div ref={wrapperRef} className={className} aria-hidden>
@@ -1263,7 +1231,7 @@ export default function ParticlePortrait({
           <Canvas
             key={glRetry}
             frameloop={shouldAnimate ? "always" : "never"}
-            resize={{ scroll: false, debounce: { scroll: 50, resize: 50 } }}
+            resize={{ scroll: false, debounce: { scroll: 50, resize: 0 } }}
             dpr={safeDeviceDpr(touchLayout, mode)}
             camera={{ position: [0, 0, BASE_Z], fov: FOV, near: 0.1, far: 100 }}
             gl={{

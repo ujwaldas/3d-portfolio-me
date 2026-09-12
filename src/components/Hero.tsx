@@ -7,12 +7,12 @@ import ParticlePortrait from "../three/ParticlePortrait";
 
 function HeroPortraitFallback() {
   return (
-    <div className="pointer-events-none absolute inset-x-0 top-[6%] z-0 mx-auto flex h-[46%] w-full max-w-[92%] items-center justify-center md:top-[4%] md:h-[78%] md:max-w-[48%] md:justify-end md:pr-[4%]">
-      <div className="relative h-full w-full max-w-[340px] overflow-hidden rounded-[2rem] border border-white/[0.08] bg-[#0a1220]/40 shadow-[0_0_80px_rgba(56,120,220,0.12)]">
+    <div className="pointer-events-none flex h-full w-full items-center justify-center">
+      <div className="relative mx-auto w-full max-w-[320px] overflow-hidden rounded-2xl border border-white/[0.08] bg-[#0a1220]/40 shadow-[0_0_80px_rgba(56,120,220,0.12)]">
         <img
           src={profile.heroImage}
           alt="Ujwal Das H S - Backend Software Engineer"
-          className="h-full w-full object-contain object-top opacity-90 mix-blend-screen"
+          className="mx-auto block aspect-square w-full max-w-[320px] rounded-2xl object-cover opacity-90"
         />
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_50%_30%,rgba(56,120,220,0.18),transparent_65%)]" />
       </div>
@@ -36,7 +36,10 @@ export default function Hero() {
   const touchLayout = coarse || mode === "mobile" || mode === "tablet";
   const [active, setActive] = useState(true);
   const [ready, setReady] = useState(false);
+  const [sceneReady, setSceneReady] = useState(false);
+  const [painted, setPainted] = useState(false);
   const hasRenderedFrame = useRef(false);
+  const readyTimer = useRef<number | null>(null);
 
   const { scrollYProgress } = useScroll({ target: trackRef, offset: ["start start", "end end"] });
 
@@ -47,6 +50,32 @@ export default function Hero() {
   useMotionValueEvent(scrollYProgress, "change", (v) => {
     progressRef.current = v;
   });
+
+  /* iOS Safari: framer useScroll can skip during inertial scroll — mirror progress from geometry */
+  useEffect(() => {
+    const onScroll = () => {
+      const el = trackRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const total = el.offsetHeight - window.innerHeight;
+      if (total > 0) {
+        progressRef.current = Math.min(1, Math.max(0, -rect.top / total));
+      }
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  useEffect(() => () => {
+    if (readyTimer.current) window.clearTimeout(readyTimer.current);
+  }, []);
+
+  useEffect(() => {
+    if (painted) return;
+    const id = window.requestAnimationFrame(() => setPainted(true));
+    return () => window.cancelAnimationFrame(id);
+  }, [painted]);
 
   const textOpacity = useTransform(scrollYProgress, [0, 0.28, 0.58], [1, 1, 0]);
   const textY = useTransform(scrollYProgress, [0, 0.58], [0, -56]);
@@ -68,35 +97,45 @@ export default function Hero() {
     return () => io.disconnect();
   }, []);
 
+  const running = active || !painted || !sceneReady;
   const staticText = reduced;
+
+  const handlePortraitReady = () => {
+    setReady(true);
+    if (readyTimer.current) window.clearTimeout(readyTimer.current);
+    readyTimer.current = window.setTimeout(() => setSceneReady(true), 1600);
+  };
 
   return (
     <div id="top" ref={trackRef} className={reduced ? "relative hero-stage" : "relative hero-track"}>
-      <div ref={stageRef} className="hero-stage sticky top-0 max-lg:overflow-visible lg:overflow-hidden">
+      <div ref={stageRef} className="hero-stage relative sticky top-0 max-lg:overflow-visible lg:overflow-hidden">
         {/* atmosphere */}
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_70%_35%,rgba(56,120,220,0.16),transparent_55%),radial-gradient(ellipse_at_20%_80%,rgba(30,64,175,0.12),transparent_55%)]" />
 
-        <ParticlePortrait
-          src={profile.heroImage}
-          progressRef={progressRef}
-          mode={mode}
-          touchLayout={touchLayout}
-          reducedMotion={reduced}
-          mouseEnabled={!coarse && !reduced}
-          active={active}
-          quality={mode === "mobile" ? "low" : "auto"}
-          onReady={() => setReady(true)}
-          onFirstFrame={() => {
-            hasRenderedFrame.current = true;
-          }}
-          className="hero-canvas-host"
-          fallback={<HeroPortraitFallback />}
-        />
+        <div className="hero-portrait-slot pointer-events-none absolute inset-0 z-0">
+          <ParticlePortrait
+            src={profile.heroImage}
+            progressRef={progressRef}
+            mode={mode}
+            touchLayout={touchLayout}
+            reducedMotion={reduced}
+            mouseEnabled={!coarse && !reduced}
+            active={running}
+            quality={mode === "mobile" ? "low" : "auto"}
+            onReady={handlePortraitReady}
+            onFirstFrame={() => {
+              hasRenderedFrame.current = true;
+              setPainted(true);
+            }}
+            className="hero-canvas-host"
+            fallback={<HeroPortraitFallback />}
+          />
+        </div>
 
-        {/* copy — top padding on mobile so H1 does not cover the portrait */}
+        {/* copy overlays the ambient portrait layer */}
         <motion.div
           style={staticText ? undefined : { opacity: textOpacity, y: textY }}
-          className="pointer-events-none relative z-10 h-full"
+          className="pointer-events-none absolute inset-0 z-10"
         >
           <div className="hero-copy-pad mx-auto flex h-full max-w-7xl flex-col justify-end px-6 pb-24 md:justify-center md:pb-0 md:pt-0">
             <motion.div

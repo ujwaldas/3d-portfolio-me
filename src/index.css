@@ -61,24 +61,17 @@ body {
   }
 }
 
-/* Mobile copy offset — vh fallback for svh padding */
-.hero-copy-pad {
-  padding-top: 40vh;
+/* Portrait slot: ambient background behind hero copy on all breakpoints */
+.hero-portrait-slot {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
 }
 
-@supports (padding-top: 1svh) {
-  .hero-copy-pad {
-    padding-top: 40svh;
-  }
-}
-
-@media (min-width: 768px) {
-  .hero-copy-pad {
-    padding-top: 0;
-  }
-}
-
-/* Canvas host fills the sticky stage; translateZ(0) fixes iOS sticky+overflow compositing */
+/* Canvas host fills the portrait slot; translateZ(0) fixes iOS sticky+overflow compositing */
 .hero-canvas-host {
   position: absolute;
   inset: 0;
@@ -110,6 +103,24 @@ body {
     -webkit-transform: translateZ(0);
     transform: translateZ(0);
   }
+}
+
+.portrait-debug-badge {
+  position: fixed;
+  z-index: 999999;
+  top: 0.5rem;
+  left: 0.5rem;
+  max-height: 50vh;
+  max-width: min(92vw, 320px);
+  overflow-y: auto;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.85);
+  color: #00ff00;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.35;
+  pointer-events: auto;
 }
 
 /* animated dash on highlighted constellation edges */

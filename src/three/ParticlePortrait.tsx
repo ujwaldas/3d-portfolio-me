@@ -878,6 +878,9 @@ function Scene({
     const t = state.clock.elapsedTime;
     const s = st.current;
     const p = Math.min(1, Math.max(0, progressRef?.current ?? 0));
+    /* On touch, play the full cinematic in the first half of the track so
+       rotation is visible while the sticky portrait is still on screen. */
+    const sp = touchLayout ? Math.min(1, p / 0.48) : p;
     const k = Math.min(1, dt * 4.5);
 
     const introRate = touchLayout && isIOSDevice() ? 2.8 : 2.4;
@@ -889,10 +892,10 @@ function Scene({
     const introT = easeOutCubic(s.intro);
     const introScatter = 1 - introT;
 
-    const pe = reducedMotion ? 0 : easeInOut(p);
-    const scrollScatter = reducedMotion ? 0 : smoothstep(0.74, 1, p);
-    const flow = reducedMotion ? 0 : smoothstep(0.6, 1, p);
-    const fade = 1 - smoothstep(0.8, 1, p);
+    const pe = reducedMotion ? 0 : easeInOut(sp);
+    const scrollScatter = reducedMotion ? 0 : smoothstep(0.74, 1, sp);
+    const flow = reducedMotion ? 0 : smoothstep(0.6, 1, sp);
+    const fade = 1 - smoothstep(0.8, 1, sp);
 
     const parallaxX = mouseEnabled ? mouse.current.x : iosParallax ? iosTouch.current.x : 0;
     const parallaxY = mouseEnabled ? mouse.current.y : iosParallax ? iosTouch.current.y : 0;
@@ -940,30 +943,30 @@ function Scene({
 
     // spray condenses inward from space slightly after the face; flies outward on scroll-out
     const sprayIntro = easeOutCubic(Math.max(0, s.intro - 0.1) / 0.9);
-    const sprayScatter = Math.max(1 - sprayIntro, smoothstep(0.66, 0.98, p));
-    const sprayOpacityBase = introT * (1 - smoothstep(0.88, 1, p));
+    const sprayScatter = Math.max(1 - sprayIntro, smoothstep(0.66, 0.98, sp));
+    const sprayOpacityBase = introT * (1 - smoothstep(0.88, 1, sp));
     spray.uniforms.uScatter.value = sprayScatter;
     spray.uniforms.uOpacity.value = touchLayout
       ? touchLayerOpacity(sprayOpacityBase, sprayScatter, fade, 0.32)
       : sprayOpacityBase;
 
     const heroScatter = 0.35 * (1 - easeOutCubic(Math.max(0, s.intro - 0.35) / 0.65));
-    const heroOpacityBase = 0.85 * easeOutCubic(Math.max(0, s.intro - 0.5) / 0.5) * (1 - smoothstep(0.85, 1, p));
+    const heroOpacityBase = 0.85 * easeOutCubic(Math.max(0, s.intro - 0.5) / 0.5) * (1 - smoothstep(0.85, 1, sp));
     hero.uniforms.uScatter.value = heroScatter;
     hero.uniforms.uOpacity.value = touchLayout
       ? touchLayerOpacity(heroOpacityBase, heroScatter, fade, 0.28)
       : heroOpacityBase;
 
     const escIntro = easeOutCubic(Math.max(0, s.intro - 0.15) / 0.85);
-    const escapeScatter = Math.max(1 - escIntro, smoothstep(0.62, 0.95, p));
-    const escapeOpacityBase = 0.95 * introT * (1 - smoothstep(0.85, 1, p));
+    const escapeScatter = Math.max(1 - escIntro, smoothstep(0.62, 0.95, sp));
+    const escapeOpacityBase = 0.95 * introT * (1 - smoothstep(0.85, 1, sp));
     escape.uniforms.uScatter.value = escapeScatter;
     escape.uniforms.uOpacity.value = touchLayout
       ? touchLayerOpacity(escapeOpacityBase, escapeScatter, fade, 0.3)
       : escapeOpacityBase;
 
     const nearScatter = 0.6 * (1 - easeOutCubic(Math.max(0, s.intro - 0.3) / 0.7));
-    const nearOpacityBase = 0.9 * introT * (1 - smoothstep(0.9, 1, p));
+    const nearOpacityBase = 0.9 * introT * (1 - smoothstep(0.9, 1, sp));
     near.uniforms.uScatter.value = nearScatter;
     near.uniforms.uOpacity.value = touchLayout
       ? touchLayerOpacity(nearOpacityBase, nearScatter, fade, 0.28)
@@ -981,10 +984,10 @@ function Scene({
     near.uniforms.uDrift.value = 0.006;
 
     node.uniforms.uDrift.value = 0.006;
-    node.uniforms.uOpacity.value = 0.9 * easeOutCubic(Math.max(0, s.intro - 0.45) / 0.55) * (1 - smoothstep(0.62, 0.9, p));
+    node.uniforms.uOpacity.value = 0.9 * easeOutCubic(Math.max(0, s.intro - 0.45) / 0.55) * (1 - smoothstep(0.62, 0.9, sp));
 
     line.uniforms.uTime.value = t;
-    line.uniforms.uOpacity.value = 0.55 * easeOutCubic(Math.max(0, s.intro - 0.4) / 0.6) * (1 - smoothstep(0.62, 0.9, p));
+    line.uniforms.uOpacity.value = 0.55 * easeOutCubic(Math.max(0, s.intro - 0.4) / 0.6) * (1 - smoothstep(0.62, 0.9, sp));
 
     star.uniforms.uOpacity.value = 0.8;
     const stars = starsRef.current;

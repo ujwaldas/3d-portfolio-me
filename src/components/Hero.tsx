@@ -94,7 +94,7 @@ export default function Hero() {
 
   return (
     <div id="top" ref={trackRef} className={reduced ? "relative hero-stage" : "relative hero-track"}>
-      <div ref={stageRef} className="hero-stage relative sticky top-0 max-lg:overflow-visible lg:overflow-hidden">
+      <div ref={stageRef} className="hero-stage relative sticky top-0 overflow-hidden">
         {/* atmosphere */}
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_70%_35%,rgba(56,120,220,0.16),transparent_55%),radial-gradient(ellipse_at_20%_80%,rgba(30,64,175,0.12),transparent_55%)]" />
 

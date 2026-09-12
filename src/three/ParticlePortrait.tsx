@@ -360,6 +360,12 @@ const smoothstep = (a: number, b: number, x: number) => {
   return t * t * (3 - 2 * t);
 };
 
+/** Touch OLED: dispersed particles need a minimum opacity while uScatter is high. */
+function touchLayerOpacity(base: number, scatter: number, fade: number, floor = 0.4): number {
+  const min = scatter > 0.04 ? floor : 0;
+  return Math.max(base, min) * fade;
+}
+
 /** Portrait placement in world units, derived from the camera frustum at BASE_Z (aspect-safe). */
 function computeLayout(
   width: number,
@@ -727,7 +733,8 @@ function Scene({
     invalidate();
     const t = window.setTimeout(invalidate, 100);
     return () => window.clearTimeout(t);
-  }, [sample, faceGeom, reducedMotion, invalidate]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sample, reducedMotion]);
 
   const nebulaScale = useRef<[number, number]>([1, 1]);
 
@@ -924,23 +931,43 @@ function Scene({
       (m.uniforms.uMouse.value as THREE.Vector2).set(s.mx, s.my);
     }
 
-    face.uniforms.uScatter.value = Math.max(introScatter, scrollScatter);
-    face.uniforms.uOpacity.value = Math.min(1, s.intro * 2) * fade;
+    const faceScatter = Math.max(introScatter, scrollScatter);
+    const faceOpacityBase = Math.min(1, s.intro * 2);
+    face.uniforms.uScatter.value = faceScatter;
+    face.uniforms.uOpacity.value = touchLayout
+      ? touchLayerOpacity(faceOpacityBase, faceScatter, fade, 0.45)
+      : faceOpacityBase * fade;
 
     // spray condenses inward from space slightly after the face; flies outward on scroll-out
     const sprayIntro = easeOutCubic(Math.max(0, s.intro - 0.1) / 0.9);
-    spray.uniforms.uScatter.value = Math.max(1 - sprayIntro, smoothstep(0.66, 0.98, p));
-    spray.uniforms.uOpacity.value = introT * (1 - smoothstep(0.88, 1, p));
+    const sprayScatter = Math.max(1 - sprayIntro, smoothstep(0.66, 0.98, p));
+    const sprayOpacityBase = introT * (1 - smoothstep(0.88, 1, p));
+    spray.uniforms.uScatter.value = sprayScatter;
+    spray.uniforms.uOpacity.value = touchLayout
+      ? touchLayerOpacity(sprayOpacityBase, sprayScatter, fade, 0.32)
+      : sprayOpacityBase;
 
-    hero.uniforms.uScatter.value = 0.35 * (1 - easeOutCubic(Math.max(0, s.intro - 0.35) / 0.65));
-    hero.uniforms.uOpacity.value = 0.85 * easeOutCubic(Math.max(0, s.intro - 0.5) / 0.5) * (1 - smoothstep(0.85, 1, p));
+    const heroScatter = 0.35 * (1 - easeOutCubic(Math.max(0, s.intro - 0.35) / 0.65));
+    const heroOpacityBase = 0.85 * easeOutCubic(Math.max(0, s.intro - 0.5) / 0.5) * (1 - smoothstep(0.85, 1, p));
+    hero.uniforms.uScatter.value = heroScatter;
+    hero.uniforms.uOpacity.value = touchLayout
+      ? touchLayerOpacity(heroOpacityBase, heroScatter, fade, 0.28)
+      : heroOpacityBase;
 
     const escIntro = easeOutCubic(Math.max(0, s.intro - 0.15) / 0.85);
-    escape.uniforms.uScatter.value = Math.max(1 - escIntro, smoothstep(0.62, 0.95, p));
-    escape.uniforms.uOpacity.value = 0.95 * introT * (1 - smoothstep(0.85, 1, p));
+    const escapeScatter = Math.max(1 - escIntro, smoothstep(0.62, 0.95, p));
+    const escapeOpacityBase = 0.95 * introT * (1 - smoothstep(0.85, 1, p));
+    escape.uniforms.uScatter.value = escapeScatter;
+    escape.uniforms.uOpacity.value = touchLayout
+      ? touchLayerOpacity(escapeOpacityBase, escapeScatter, fade, 0.3)
+      : escapeOpacityBase;
 
-    near.uniforms.uScatter.value = 0.6 * (1 - easeOutCubic(Math.max(0, s.intro - 0.3) / 0.7));
-    near.uniforms.uOpacity.value = 0.9 * introT * (1 - smoothstep(0.9, 1, p));
+    const nearScatter = 0.6 * (1 - easeOutCubic(Math.max(0, s.intro - 0.3) / 0.7));
+    const nearOpacityBase = 0.9 * introT * (1 - smoothstep(0.9, 1, p));
+    near.uniforms.uScatter.value = nearScatter;
+    near.uniforms.uOpacity.value = touchLayout
+      ? touchLayerOpacity(nearOpacityBase, nearScatter, fade, 0.28)
+      : nearOpacityBase;
 
     spray.uniforms.uOrbit.value = reducedMotion ? 0.15 : 0.35;
     spray.uniforms.uFlow.value = flow * 0.4;

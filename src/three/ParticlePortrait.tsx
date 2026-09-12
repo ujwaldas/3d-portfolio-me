@@ -361,7 +361,13 @@ const smoothstep = (a: number, b: number, x: number) => {
 };
 
 /** Portrait placement in world units, derived from the camera frustum at BASE_Z (aspect-safe). */
-function computeLayout(width: number, height: number, aspect: number, mode: LayoutMode) {
+function computeLayout(
+  width: number,
+  height: number,
+  aspect: number,
+  mode: LayoutMode,
+  touchLayout: boolean,
+) {
   const w = Math.max(width, 2);
   const h = Math.max(height, 2);
   const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : 0.75;
@@ -371,15 +377,20 @@ function computeLayout(width: number, height: number, aspect: number, mode: Layo
     const s = Math.min(0.8 * vh, (0.44 * vw) / safeAspect);
     return { scale: s, x: 0.24 * vw, y: -0.04 * vh, vh, vw };
   }
+  // Touch portrait phones (iOS + Android) — tall viewport, narrow width
+  const portraitPhone = touchLayout && h > w && w < 768;
+  if (mode === "mobile" || portraitPhone) {
+    const s = Math.min(0.64 * vh, (0.5 * vw) / safeAspect);
+    const x = vw < 2.8 ? 0 : 0.24 * vw;
+    const yLift = isIOSDevice() ? 0.28 : isAndroidDevice() ? 0.26 : 0.24;
+    return { scale: s, x, y: yLift * vh, vh, vw };
+  }
   if (mode === "tablet") {
     const s = Math.min(0.64 * vh, (0.5 * vw) / safeAspect);
     return { scale: s, x: 0.24 * vw, y: 0, vh, vw };
   }
-  // Mobile only — centred on narrow portrait phones, lifted into upper/mid hero
   const s = Math.min(0.64 * vh, (0.5 * vw) / safeAspect);
-  const x = vw < 2.8 ? 0 : 0.24 * vw;
-  const y = 0.18 * vh;
-  return { scale: s, x, y, vh, vw };
+  return { scale: s, x: 0, y: 0, vh, vw };
 }
 
 /** iPhone / iPad Safari — coarse-pointer devices skip mouseEnabled in Hero. */
@@ -389,6 +400,11 @@ function isIOSDevice(): boolean {
     /iPad|iPhone|iPod/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
   );
+}
+
+function isAndroidDevice(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /Android/i.test(navigator.userAgent);
 }
 
 function resolveLayoutMode(): LayoutMode {
@@ -714,8 +730,8 @@ function Scene({
 
   /* layout / sizing – recomputed from the live canvas size & DPR ------------ */
   const layout = useMemo(
-    () => computeLayout(canvasW, canvasH, sample?.aspect ?? 0.75, mode),
-    [canvasW, canvasH, sample?.aspect, mode],
+    () => computeLayout(canvasW, canvasH, sample?.aspect ?? 0.75, mode, touchLayout),
+    [canvasW, canvasH, sample?.aspect, mode, touchLayout],
   );
 
   useEffect(() => {
